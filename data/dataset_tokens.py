@@ -1,76 +1,75 @@
-from __future__ import annotations
-import os, json, torch
-from typing import Dict, List, Tuple
+import json, os
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torchvision.io import read_image
 
 class TokenFireDataset(torch.utils.data.Dataset):
     """
-    Loads patch-token cache produced by scripts/build_patch_cache.py
+    Loads per-sequence patch tokens from disk and yields training pairs:
+      X = {static_tokens [N,Cs], last_fire_tokens [N], wind_last [2]}
+      y = {target_patch_labels [N]}  (mean of target mask within each patch)
 
-    Each sample (sliding window of length T):
-      fire_tokens: [1, Ph, Pw, T-1]   (mean occupancy per patch in [0,1])
-      static_tok : [Cs, Ph, Pw]
-      wind       : [T-1, 2]           (normalized)
-      target_tok : [1, Ph, Pw]        (iso tokens for next timestep)
+    You can later unpatchify predictions for pretty overlays.
     """
-    def __init__(self, cache_root: str, sequence_length: int = 3):
+    def __init__(self, cache_dir: str, raw_root: str, sequence_length=3, fire_value=231):
         super().__init__()
-        self.cache_root = os.path.expanduser(cache_root)
-        self.sequence_length = int(sequence_length)
+        self.cache_dir = os.path.expanduser(cache_dir)
+        self.raw_root  = os.path.expanduser(raw_root)  # to read target PNGs for y
+        self.sequence_length = sequence_length
+        self.fire_value = fire_value
 
-        # Scene meta
-        with open(os.path.join(self.cache_root, "meta.json"), "r") as f:
-            self.scene_meta = json.load(f)
-
-        # Enumerate sequences
-        self.seq_root = os.path.join(self.cache_root, "sequences")
-        self.seq_dirs = sorted([d for d in os.listdir(self.seq_root) if d.startswith("sequence_")])
-
-        # Build index of windows
-        self.index: List[Dict] = []
+        # index sequences
+        self.seq_dirs = sorted(d for d in os.listdir(self.cache_dir) if d.startswith("sequence_"))
+        self.samples = []  # each = (seq_dir, t_last)
         for sd in self.seq_dirs:
-            sdir = os.path.join(self.seq_root, sd)
-            with open(os.path.join(sdir, "meta.json"), "r") as f:
-                smeta = json.load(f)
-            T = int(smeta["frames"])
-            if T < 2:
-                continue
-            # Store path refs and sliding windows
-            for start in range(T - self.sequence_length + 1):
-                self.index.append({
-                    "seq_dir": sdir,
-                    "fire_path": os.path.join(sdir, "fire_tokens.pt"),
-                    "iso_path":  os.path.join(sdir, "iso_tokens.pt"),
-                    "static_path": os.path.join(sdir, "static_tokens.pt"),
-                    "wind_path": os.path.join(sdir, "wind.pt"),
-                    "valid_spatial_path": os.path.join(sdir, "valid_spatial.pt"),
-                    "sub_ids": list(range(start, start + self.sequence_length)),
-                })
+            meta = json.load(open(os.path.join(self.cache_dir, sd, "meta.json")))
+            T = meta["num_frames"]
+            # with T frames, you can form (T-1) next-step targets
+            for t_last in range(T-1):
+                self.samples.append((sd, t_last))
 
-    def __len__(self) -> int:
-        return len(self.index)
+    def __len__(self): return len(self.samples)
 
-    def __getitem__(self, idx: int):
-        it = self.index[idx]
-        fire = torch.load(it["fire_path"])    # [Tf, Ph, Pw]
-        iso  = torch.load(it["iso_path"])     # [Tf, Ph, Pw]
-        stat = torch.load(it["static_path"])  # [Cs, Ph, Pw]
-        wind = torch.load(it["wind_path"])    # [Tf, 2]
-        # vmask not needed for forward pass yet; you may use it downstream
-        # vmask = torch.load(it["valid_spatial_path"])  # [Ph, Pw] (bool)
+    def _target_patch_avg(self, seq_id_int: int, t_next: int, P: int, H:int, W:int, pad_mode: str):
+        # load iso mask as [H,W] in {0,1}
+        iso_dir = os.path.join(self.raw_root, "isochrones", f"sequence_{seq_id_int:03d}")
+        iso_files = sorted(f for f in os.listdir(iso_dir) if f.endswith(".png"))
+        img = read_image(os.path.join(iso_dir, iso_files[t_next]))  # [3,h,w]
+        iso = (img[1] == self.fire_value).float().unsqueeze(0)      # [1,h,w]
 
-        ids = it["sub_ids"]
-        past = ids[:-1]
-        target_id = ids[-1]
+        # we don't know the crop size here; meta contains original H,W
+        # If the iso image is already cropped per sequence (it is), H,W should match.
+        # pad and avgpool to patch grid
+        C, h, w = iso.shape
+        pad_h = (P - (h % P)) % P
+        pad_w = (P - (w % P)) % P
+        iso_pad = F.pad(iso.unsqueeze(0), (0,pad_w,0,pad_h), mode="constant", value=0.0).squeeze(0)
+        grid = F.avg_pool2d(iso_pad, kernel_size=P, stride=P)        # [1,Gy,Gx]
+        return grid.view(-1)                                         # [N]
 
-        # Assemble shapes to match collate contract but at patch grid
-        # fire_tokens -> [1, Ph, Pw, T-1]
-        fire_hist = fire[past]                  # [T-1, Ph, Pw]
-        fire_hist = fire_hist.permute(1,2,0).unsqueeze(0).contiguous()  # [1,Ph,Pw,T-1]
+    def __getitem__(self, i):
+        seq_dir, t_last = self.samples[i]
+        seq_path = os.path.join(self.cache_dir, seq_dir)
+        meta = json.load(open(os.path.join(seq_path, "meta.json")))
 
-        static_tok = stat.contiguous()          # [Cs, Ph, Pw]
-        wind_hist  = wind[past].contiguous()    # [T-1, 2]
+        static = np.load(os.path.join(seq_path, meta["static_tokens"]))  # [N,Cs]
+        valid  = np.load(os.path.join(seq_path, meta["valid_tokens"]))   # [N]
+        wind   = np.load(os.path.join(seq_path, meta["wind"]))           # [T,2]
 
-        target_tok = iso[target_id].unsqueeze(0).contiguous()  # [1,Ph,Pw]
+        fire_last = np.load(os.path.join(seq_path, meta["fires"][str(t_last)]))  # [N]
+        t_next = t_last + 1
+        # target per-patch average
+        seq_id_int = int(meta["sequence_id"])
+        y_patch = self._target_patch_avg(seq_id_int, t_next, meta["patch_size"], meta["H"], meta["W"], meta["pad_mode"])
 
-        return fire_hist, static_tok, wind_hist, target_tok
+        X = {
+            "static": torch.from_numpy(static).float(),          # [N,Cs]
+            "fire_last": torch.from_numpy(fire_last).float(),    # [N]
+            "wind_last": torch.from_numpy(wind[t_last]).float(), # [2]
+            "valid": torch.from_numpy(valid).bool(),             # [N]
+            "meta": meta,
+        }
+        y = y_patch.float()                                      # [N] in [0,1] mean of target within patch
+        return X, y
 

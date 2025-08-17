@@ -1,196 +1,352 @@
-# scripts/build_patch_cache.py
-from __future__ import annotations
-import os, json, time, argparse, yaml, pathlib
+import argparse, json, os, pathlib, time, math
+from collections import defaultdict
+
+import numpy as np
 import torch
+import torch.nn.functional as F
 from torchvision.io import read_image
-import rioxarray
-import pandas as pd
+from tqdm import tqdm  # progress bar (guarded by config)
 
-from utils import init_wandb, save_artifact
-from utils.patchify import pad_to_multiple2d, patchify_2d, valid_token_mask_from_footprint
-from data.transforms import LandscapeNormalize, WeatherNormalize
+from data.dataset_raw import RawFireDataset
+import yaml
 
-def load_cfg(p):
-    with open(p, "r") as f:
+# ----------------
+# Config + helpers
+# ----------------
+def _load_cfg(path: str):
+    with open(path, "r") as f:
         return yaml.safe_load(f)
 
-def _scene_meta(data_dir: str):
-    with open(os.path.join(data_dir, "landscape", "indices.json"), "r") as f:
-        indices = json.load(f)
-    return indices
+def _expand(p): return os.path.expanduser(p)
+def _now(): return time.strftime("%Y-%m-%d %H:%M:%S")
 
 def _ensure_dir(p):
     os.makedirs(p, exist_ok=True)
+    return p
 
-def _nowstamp():
-    return time.strftime("%Y%m%d-%H%M%S")
+def _write_jsonl(path, rec):
+    with open(path, "a") as f:
+        f.write(json.dumps(rec) + "\n")
 
-def build_cache(cfg):
-    dcfg = cfg["data"]
-    pcfg = cfg.get("patchify_on_disk", {})
-    psize = int(pcfg.get("patch_size", 16))
-    stride = int(pcfg.get("stride", psize))
-    assert stride == psize, "For Phase 1 use non-overlapping patches (stride==patch_size)"
+# -----------------------
+# Pooling / tokenization
+# -----------------------
+@torch.no_grad()
+def _avgpool_grid(x_chw: torch.Tensor, P: int, pad_mode: str, const_val: float = 0.0):
+    """
+    x_chw: [C,H,W]; returns (grid[C, Gy, Gx], meta)
+    meta: dict(H,W,H_pad,W_pad,Gy,Gx,P)
+    """
+    C, H, W = x_chw.shape
+    if pad_mode == "pad_to_multiple":
+        pad_h = (P - (H % P)) % P
+        pad_w = (P - (W % P)) % P
+        pad = (0, pad_w, 0, pad_h)
+        x_pad = F.pad(x_chw.unsqueeze(0), pad, mode="constant", value=0.0).squeeze(0)
+    elif pad_mode == "edge":
+        pad_h = (P - (H % P)) % P
+        pad_w = (P - (W % P)) % P
+        pad = (0, pad_w, 0, pad_h)
+        x_pad = F.pad(x_chw.unsqueeze(0), pad, mode="replicate").squeeze(0)
+    elif pad_mode == "constant":
+        pad_h = (P - (H % P)) % P
+        pad_w = (P - (W % P)) % P
+        pad = (0, pad_w, 0, pad_h)
+        x_pad = F.pad(x_chw.unsqueeze(0), pad, mode="constant", value=const_val).squeeze(0)
+    else:
+        raise ValueError(f"unknown pad_mode {pad_mode}")
 
-    data_dir = os.path.expanduser(dcfg["data_dir"])
-    out_root = os.path.join(data_dir, pcfg.get("save_dir", "patch_cache"))
-    _ensure_dir(out_root)
-    seq_out = os.path.join(out_root, "sequences")
-    _ensure_dir(seq_out)
+    grid = F.avg_pool2d(x_pad, kernel_size=P, stride=P)  # [C, Gy, Gx]
+    Gy, Gx = grid.shape[-2:]
+    meta = dict(H=H, W=W, H_pad=H+pad_h, W_pad=W+pad_w, Gy=Gy, Gx=Gx, P=P)
+    return grid, meta
 
-    # ---- Normalizers & global stats ----
-    lnorm = LandscapeNormalize()
-    wnorm = WeatherNormalize()
+def _target_patch_avg_png(iso_png_path: str, fire_value: int, P: int):
+    img = read_image(iso_png_path)  # [3,h,w], uint8
+    iso = (img[1] == fire_value).float().unsqueeze(0)  # [1,h,w]
+    _, h, w = iso.shape
+    pad_h = (P - (h % P)) % P
+    pad_w = (P - (w % P)) % P
+    iso_pad = F.pad(iso.unsqueeze(0), (0, pad_w, 0, pad_h), mode="constant", value=0.0).squeeze(0)
+    grid = F.avg_pool2d(iso_pad, kernel_size=P, stride=P)  # [1,Gy,Gx]
+    return grid.view(-1)  # [N]
 
-    # Landscape full read (channels-first xarray)
-    l_path = os.path.join(data_dir, "landscape", "Input_Geotiff.tif")
-    xarr = lnorm(l_path)               # normalized, channels-first DataArray
-    C, H, W = xarr.shape[0], xarr.shape[1], xarr.shape[2]
-    static_min = lnorm.landscape_min.tolist()
-    static_max = lnorm.landscape_max.tolist()
+# ---------------
+# Build one seq
+# ---------------
+def build_one_sequence(ds: RawFireDataset, seq_id: str, out_dir: str, pcfg: dict):
+    P = int(pcfg["patch_size"])
+    pad_mode = pcfg.get("pad_mode", "pad_to_multiple")
+    const_val = float(pcfg.get("constant_pad_value", 0.0))
 
-    # Pad full static once; compute static tokens once
-    static_full = torch.from_numpy(xarr.values).float()  # [C,H,W]
-    static_pad, (pl, pr, pt, pb) = pad_to_multiple2d(static_full, psize, mode="edge")
-    PH, PW = static_pad.shape[1] // psize, static_pad.shape[2] // psize
-    static_tokens_full = torch.stack([patchify_2d(static_pad[c], psize) for c in range(C)], dim=0)  # [C,PH,PW]
-    torch.save(static_tokens_full, os.path.join(out_root, "static_tokens_full.pt"))
+    # crop static once
+    y0, y1, x0, x1 = ds.indices[seq_id]
+    static_chw_np = ds.landscape_data[:, y0:y1, x0:x1].values  # (Cs, H, W)
+    static_chw = torch.from_numpy(static_chw_np).float()
+    Cs, H, W = static_chw.shape
 
-    # Weather: fit global min/max over all CSVs
-    weather_folder = os.path.join(data_dir, "landscape", "Weathers")
-    history_csv = os.path.join(data_dir, "landscape", "WeatherHistory.csv")
-    weathers, weather_history = wnorm.fit_transform(weather_folder, history_csv)
-    wstats = {
-        "min_ws": float(wnorm.min_ws), "max_ws": float(wnorm.max_ws),
-        "min_wd": float(wnorm.min_wd), "max_wd": float(wnorm.max_wd),
+    static_grid, meta = _avgpool_grid(static_chw, P, pad_mode=pad_mode, const_val=const_val)
+    Gy, Gx = meta["Gy"], meta["Gx"]
+    N = Gy * Gx
+    static_tokens = static_grid.view(Cs, -1).T.contiguous().numpy().astype(np.float32)  # [N, Cs]
+
+    # valid (any real pixel contributes)
+    # With pad_to_multiple + constant 0, any patch that receives only pad stays zero → treat as valid=False
+    valid_tokens = (static_grid.sum(dim=0) > 0).view(-1).cpu().numpy().astype(np.bool_)
+
+    fire_root = os.path.join(ds.data_dir, "fire_frames", f"sequence_{int(seq_id):03d}")
+    iso_root  = os.path.join(ds.data_dir, "isochrones",   f"sequence_{int(seq_id):03d}")
+    fire_files = sorted(f for f in os.listdir(fire_root) if f.endswith(".png"))
+    iso_files  = sorted(f for f in os.listdir(iso_root)  if f.endswith(".png"))
+    assert len(fire_files) == len(iso_files), f"mismatch frames on seq {seq_id}"
+    T_all = len(fire_files)
+
+    weather_file = ds.weather_history.iloc[int(seq_id) - 1].values[0].split("Weathers/")[1]
+    wdf = ds.weathers[weather_file]
+
+    _ensure_dir(out_dir)
+    np.save(os.path.join(out_dir, "static_tokens.npy"), static_tokens)
+    np.save(os.path.join(out_dir, "valid_tokens.npy"),  valid_tokens)
+
+    # wind and fire tokens per frame
+    wind_list = []
+    fire_index_to_file = {}
+
+    for t, fname in enumerate(fire_files):
+        img = read_image(os.path.join(fire_root, fname))  # [3,Hseq,Wseq]
+        fire = (img[1, y0:y1, x0:x1] == 231).float().unsqueeze(0)  # [1,H,W]
+        fire_grid, _ = _avgpool_grid(fire, P, pad_mode=pad_mode, const_val=0.0)
+        fire_tokens = fire_grid.view(-1).contiguous().numpy().astype(np.float32)  # [N]
+        np.save(os.path.join(out_dir, f"fire_tokens_t{t:03d}.npy"), fire_tokens)
+        fire_index_to_file[t] = f"fire_tokens_t{t:03d}.npy"
+
+        ws = float(wdf.iloc[t]["WS"]); wd = float(wdf.iloc[t]["WD"])
+        wind_list.append(ds.weather_normalizer(ws, wd).numpy())
+
+    wind = np.stack(wind_list, axis=0)  # [T,2]
+    np.save(os.path.join(out_dir, "wind.npy"), wind)
+
+    # meta
+    meta.update({
+        "sequence_id": seq_id,
+        "patch_size": P,
+        "grid_h": Gy, "grid_w": Gx, "num_patches": N,
+        "num_frames": T_all,
+        "pad_mode": pad_mode,
+        "static_tokens": "static_tokens.npy",
+        "valid_tokens": "valid_tokens.npy",
+        "wind": "wind.npy",
+        "fires": fire_index_to_file,
+        "fire_value": 231,
+    })
+    with open(os.path.join(out_dir, "meta.json"), "w") as f:
+        json.dump(meta, f, indent=2)
+
+    # also return a tiny preview tensor (last fire frame grid) for optional logging
+    preview = torch.from_numpy(np.load(os.path.join(out_dir, fire_index_to_file[T_all-1]))).view(Gy, Gx)
+    return {
+        "Gy": Gy, "Gx": Gx, "N": N, "T": T_all, "Cs": Cs, "H": H, "W": W,
+        "preview": preview,  # [Gy,Gx] float in [0,1]
     }
 
-    # Persist stats
-    with open(os.path.join(out_root, "static_minmax.json"), "w") as f:
-        json.dump({"min": static_min, "max": static_max}, f)
-    with open(os.path.join(out_root, "weather_minmax.json"), "w") as f:
-        json.dump(wstats, f)
+def persist_norm_stats(cache_root: str, ds: RawFireDataset):
+    stats_dir = _ensure_dir(os.path.join(cache_root, "_stats"))
+    s = {"min": [float(x) for x in ds.landscape_min],
+         "max": [float(x) for x in ds.landscape_max]}
+    with open(os.path.join(stats_dir, "static_minmax.json"), "w") as f:
+        json.dump(s, f, indent=2)
+    w = {"ws_min": float(ds.weather_normalizer.min_ws),
+         "ws_max": float(ds.weather_normalizer.max_ws),
+         "wd_min": float(ds.weather_normalizer.min_wd),
+         "wd_max": float(ds.weather_normalizer.max_wd)}
+    with open(os.path.join(stats_dir, "weather_minmax.json"), "w") as f:
+        json.dump(w, f, indent=2)
 
-    # Scene meta
-    scene_meta = {
-        "build_time": _nowstamp(),
-        "patch_size": psize,
-        "stride": stride,
-        "pad": {"left": pl, "right": pr, "top": pt, "bottom": pb},
-        "orig_hw": [H, W],
-        "padded_hw": [static_pad.shape[1], static_pad.shape[2]],
-        "token_hw": [PH, PW],
-        "static_channels": C,
-        "encoding": cfg.get("encoding", {}),
-    }
-    with open(os.path.join(out_root, "meta.json"), "w") as f:
-        json.dump(scene_meta, f, indent=2)
+# -------------------
+# W&B helper (light)
+# -------------------
+def _maybe_wandb_start(cfg):
+    wb = cfg.get("wandb", {})
+    pc = cfg.get("patchify_on_disk", {})
+    if not (wb.get("enabled", True) and pc.get("progress_log_to_wandb", True)):
+        return None, None
+    try:
+        import wandb
+    except Exception:
+        return None, None
+    run = wandb.init(
+        project=wb.get("project", "emberformer"),
+        entity=wb.get("entity") or None,
+        name=f"build-cache-{time.strftime('%m%d-%H%M')}",
+        job_type="build_cache",
+        config=cfg,
+        mode=wb.get("mode","online"),
+    )
+    # define counters
+    try:
+        wandb.define_metric("build/seq_idx")
+        wandb.define_metric("build/*", step_metric="build/seq_idx")
+    except Exception:
+        pass
+    return run, wandb
 
-    # ---- Iterate sequences ----
-    indices = _scene_meta(data_dir)
-    fire_root = os.path.join(data_dir, "fire_frames")
-    iso_root  = os.path.join(data_dir, "isochrones")
-    seq_dirs = sorted([d for d in os.listdir(fire_root) if d.startswith("sequence_")])
+def _maybe_log_artifact(run, cfg, cache_root):
+    wb = cfg.get("wandb", {})
+    pc = cfg.get("patchify_on_disk", {})
+    if run is None or not pc.get("log_artifact", True):
+        return
+    art = run.Artifact(
+        name="patch_cache",
+        type="dataset",
+        metadata={
+            "patch_size": pc["patch_size"],
+            "stride": pc["stride"],
+            "pad_mode": pc["pad_mode"],
+        },
+    )
+    art.add_dir(cache_root)
+    run.log_artifact(art)
 
-    built = 0
-    for seq_dir in seq_dirs:
-        seq_id = seq_dir.replace("sequence_", "")
-        seq_idx = str(int(seq_id))
-        if seq_idx not in indices:
-            print(f"[warn] indices missing for seq {seq_idx}, skipping")
-            continue
-        y0, y1, x0, x1 = indices[seq_idx]    # pixel coords (orig, unpadded)
-        # Token coords in the padded grid
-        ty0, ty1 = y0 // psize, (y1 + psize - 1) // psize
-        tx0, tx1 = x0 // psize, (x1 + psize - 1) // psize
-        Ph_seq, Pw_seq = ty1 - ty0, tx1 - tx0
-
-        # Precompute spatial valid tokens for this crop
-        vmask = valid_token_mask_from_footprint(H, W, psize, pad_bottom=pb, pad_right=pr)  # [PH,PW]
-        vmask_seq = vmask[ty0:ty1, tx0:tx1].contiguous()                                   # [Ph_seq,Pw_seq]
-        # Slice static tokens from full
-        static_seq = static_tokens_full[:, ty0:ty1, tx0:tx1].contiguous()                  # [C,Ph_seq,Pw_seq]
-
-        fire_files = sorted([f for f in os.listdir(os.path.join(fire_root, seq_dir)) if f.endswith(".png")])
-        iso_files  = sorted([f for f in os.listdir(os.path.join(iso_root,  seq_dir)) if f.endswith(".png")])
-        assert len(fire_files) == len(iso_files), f"{seq_dir}: mismatch fire/iso frames"
-        T_total = len(fire_files)
-
-        # Build per-frame fire/iso tokens + wind
-        fire_tok = torch.empty((T_total, Ph_seq, Pw_seq), dtype=torch.float32)
-        iso_tok  = torch.empty((T_total, Ph_seq, Pw_seq), dtype=torch.float32)
-        wind     = torch.empty((T_total, 2), dtype=torch.float32)
-
-        weather_file_name = weather_history.iloc[int(seq_id) - 1].values[0].split("Weathers/")[1]
-        wdf = weathers[weather_file_name]
-
-        for t in range(T_total):
-            f_img = read_image(os.path.join(fire_root, seq_dir, fire_files[t]))   # [3,Hs,Ws]
-            i_img = read_image(os.path.join(iso_root,  seq_dir, iso_files[t]))    # [3,Hs,Ws]
-            f_mask = (f_img[1] == 231).float()                                    # [Hs,Ws]
-            i_mask = (i_img[1] == 231).float()
-
-            # paste into full-size canvas to reuse the same padding logic
-            canvas_f = torch.zeros((H, W), dtype=torch.float32)
-            canvas_i = torch.zeros((H, W), dtype=torch.float32)
-            canvas_f[y0:y1, x0:x1] = f_mask
-            canvas_i[y0:y1, x0:x1] = i_mask
-
-            canvas_f_pad, _ = pad_to_multiple2d(canvas_f, psize, mode="constant", constant_value=0.0)
-            canvas_i_pad, _ = pad_to_multiple2d(canvas_i, psize, mode="constant", constant_value=0.0)
-            f_tok_full = patchify_2d(canvas_f_pad, psize)  # [PH,PW]
-            i_tok_full = patchify_2d(canvas_i_pad, psize)
-
-            fire_tok[t] = f_tok_full[ty0:ty1, tx0:tx1]
-            iso_tok[t]  = i_tok_full[ty0:ty1, tx0:tx1]
-
-            ws, wd = float(wdf.iloc[t]["WS"]), float(wdf.iloc[t]["WD"])
-            wind[t] = torch.tensor([
-                (ws - wnorm.min_ws) / max(1e-12, (wnorm.max_ws - wnorm.min_ws)),
-                (wd - wnorm.min_wd) / max(1e-12, (wnorm.max_wd - wnorm.min_wd)),
-            ])
-
-        # Save seq
-        seq_out_dir = os.path.join(seq_out, seq_dir)
-        _ensure_dir(seq_out_dir)
-        torch.save(static_seq, os.path.join(seq_out_dir, "static_tokens.pt"))
-        torch.save(fire_tok,   os.path.join(seq_out_dir, "fire_tokens.pt"))
-        torch.save(iso_tok,    os.path.join(seq_out_dir, "iso_tokens.pt"))
-        torch.save(vmask_seq,  os.path.join(seq_out_dir, "valid_spatial.pt"))
-        torch.save(wind,       os.path.join(seq_out_dir, "wind.pt"))
-        with open(os.path.join(seq_out_dir, "meta.json"), "w") as f:
-            json.dump({
-                "sequence_id": seq_idx,
-                "orig_bbox_xyxy": [x0, y0, x1, y1],
-                "token_bbox_tytytxtx": [ty0, tx0, ty1, tx1],
-                "frames": T_total,
-                "token_hw": [Ph_seq, Pw_seq],
-            }, f, indent=2)
-
-        built += 1
-
-    return out_root, built
-
+# -----------
+# Main entry
+# -----------
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/emberformer.yaml")
+    ap.add_argument("--subset", type=int, default=None, help="build only first N sequences")
     args = ap.parse_args()
 
-    cfg = load_cfg(args.config)
-    run = init_wandb(cfg, context={"script": pathlib.Path(__file__).stem})
+    cfg = _load_cfg(args.config)
+    dcfg = cfg["data"]; pcfg = cfg["patchify_on_disk"]
+    cache_root = _ensure_dir(_expand(pcfg["cache_dir"]))
+    logs_dir = _ensure_dir(os.path.join(cache_root, "_logs"))
+    progress_path = os.path.join(logs_dir, f"build_progress_{time.strftime('%Y%m%d-%H%M%S')}.jsonl")
 
-    out_root, nseq = build_cache(cfg)
-    print(f"[patchify] built cache at {out_root} | sequences: {nseq}")
+    # load raw once (normalizers + indices)
+    ds = RawFireDataset(dcfg["data_dir"], sequence_length=dcfg.get("sequence_length", 3))
 
+    # decide which sequences
+    # use the unique sequence ids already enumerated by RawFireDataset
+    seq_ids = sorted(set(s["sequence_id"] for s in ds.samples), key=lambda x: int(x))
+    if args.subset:
+        seq_ids = seq_ids[:args.subset]
+
+    # start W&B (optional)
+    run, wandb = _maybe_wandb_start(cfg)
     if run:
-        # Log one artifact representing this build
-        art_name = f"patch_cache-{_nowstamp()}"
-        meta = {"sequences": nseq}
-        from wandb import Artifact  # type: ignore
-        # zip directory lazily via add_dir
-        art = Artifact(name=art_name, type="dataset", metadata=meta)
-        art.add_dir(out_root)
-        run.log_artifact(art)
+        run.summary["cache_dir"] = cache_root
+        run.summary["num_sequences_planned"] = len(seq_ids)
+
+    # progress bar
+    use_bar = bool(pcfg.get("progress_use_tqdm", True))
+    iterator = tqdm(seq_ids, desc="patchify", unit="seq") if use_bar else seq_ids
+
+    t0 = time.time()
+    totals = defaultdict(float)
+    log_every = int(pcfg.get("progress_log_every", 5))
+    preview_budget = int(pcfg.get("preview_n", 1))
+
+    print(f"[build] { _now() }  planning {len(seq_ids)} sequences → {cache_root}")
+
+    for idx, seq in enumerate(iterator):
+        out_dir = os.path.join(cache_root, f"sequence_{int(seq):03d}")
+        meta_path = os.path.join(out_dir, "meta.json")
+        start = time.time()
+
+        skipped = False
+        error_msg = None
+        stats = None
+
+        try:
+            if os.path.exists(meta_path):
+                skipped = True
+                # still count frames & patches by reading meta (cheap)
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+                stats = {"T": meta.get("num_frames", 0), "N": meta.get("num_patches", 0)}
+            else:
+                stats = build_one_sequence(ds, seq, out_dir, pcfg)
+
+            dt = time.time() - start
+            seq_T = int(stats["T"])
+            seq_N = int(stats.get("N", stats["Gy"] * stats["Gx"]))
+            totals["sequences"] += 1
+            totals["frames"] += seq_T
+            totals["patches"] += seq_N
+            totals["seconds"] += dt
+
+            # JSONL progress row (always)
+            _write_jsonl(progress_path, {
+                "ts": _now(),
+                "seq": int(seq),
+                "skipped": skipped,
+                "frames": seq_T,
+                "patches": seq_N,
+                "seconds": round(dt, 3),
+                "status": "ok",
+            })
+
+            # W&B heartbeat (optional)
+            if run and ((idx + 1) % log_every == 0 or idx == 0):
+                elapsed = time.time() - t0
+                seq_per_min = (idx + 1) / max(1e-9, elapsed / 60.0)
+                eta_min = (len(seq_ids) - (idx + 1)) / max(1e-9, seq_per_min)
+                wandb.log({
+                    "build/seq_idx": idx + 1,
+                    "build/sequences_done": idx + 1,
+                    "build/frames_done": int(totals["frames"]),
+                    "build/patches_done": int(totals["patches"]),
+                    "build/elapsed_min": elapsed / 60.0,
+                    "build/seq_per_min": seq_per_min,
+                    "build/eta_min": eta_min,
+                })
+
+            # optional tiny preview (first few sequences)
+            if run and preview_budget > 0 and not skipped and "preview" in stats:
+                prev = stats["preview"].clamp(0, 1)            # [Gy,Gx], mean fire per patch
+                # upscale to ~160px for a quick look
+                P = 160 // max(prev.shape)
+                P = max(P, 1)
+                up = torch.kron(prev, torch.ones((P, P))).numpy()
+                wandb.log({"build/preview": wandb.Image((up * 255).astype(np.uint8),
+                                                        caption=f"seq {int(seq)} (last fire patch grid)")})
+                preview_budget -= 1
+
+            # progress bar description
+            if use_bar and hasattr(iterator, "set_postfix_str"):
+                iterator.set_postfix_str(f"T={seq_T} N={seq_N} dt={dt:.2f}s")
+
+        except Exception as e:
+            error_msg = repr(e)
+            _write_jsonl(progress_path, {
+                "ts": _now(),
+                "seq": int(seq),
+                "skipped": False,
+                "frames": None,
+                "patches": None,
+                "seconds": round(time.time() - start, 3),
+                "status": "error",
+                "error": error_msg,
+            })
+            print(f"[build][ERROR] seq {seq}: {error_msg}")
+
+    # persist global stats + norm stats
+    persist_norm_stats(cache_root, ds)
+    totals_out = {
+        "finished_at": _now(),
+        "sequences": int(totals["sequences"]),
+        "frames": int(totals["frames"]),
+        "patches": int(totals["patches"]),
+        "seconds": round(totals["seconds"], 3),
+        "seq_per_min": (totals["sequences"] / max(1e-9, totals["seconds"] / 60.0)),
+    }
+    with open(os.path.join(logs_dir, "build_totals_last.json"), "w") as f:
+        json.dump(totals_out, f, indent=2)
+    print(f"[build] done. totals: {totals_out}")
+
+    # log artifact snapshot (optional)
+    if run:
+        _maybe_log_artifact(run, cfg, cache_root)
         run.finish()
 
 if __name__ == "__main__":
