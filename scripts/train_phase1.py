@@ -1,4 +1,4 @@
-import os, time, argparse, yaml, inspect, torch
+import os, time, argparse, yaml, inspect, torch, pathlib
 import torch.nn as nn
 from torch.utils.data import DataLoader
 import torchmetrics
@@ -14,11 +14,9 @@ from utils import (
     save_artifact,
 )
 
-
 def load_cfg(p):
     with open(p, "r") as f:
         return yaml.safe_load(f)
-
 
 def make_loader(cfg):
     d = cfg["data"]
@@ -34,7 +32,6 @@ def make_loader(cfg):
     )
     return ds, dl
 
-
 def build_model(name, static_channels):
     n = (name or "").lower()
     if n in ["copy_last", "copy", "identity"]:
@@ -45,9 +42,7 @@ def build_model(name, static_channels):
         return Tiny3D(in_ch=1, hidden=16)
     raise ValueError(f"unknown model {name}")
 
-
 def call_model(model, fire, static, wind, valid_tokens):
-    # Try (fire, static, wind, valid_tokens) then (fire, static, wind)
     sig = inspect.signature(model.forward)
     if len(sig.parameters) >= 4:
         try:
@@ -56,9 +51,7 @@ def call_model(model, fire, static, wind, valid_tokens):
             pass
     return model(fire, static, wind)
 
-
 def _coerce_float(val, name):
-    """Allow floats as numbers or strings like '1e-3'. Raise clear error otherwise."""
     if isinstance(val, (int, float)):
         return float(val)
     if isinstance(val, str):
@@ -69,7 +62,6 @@ def _coerce_float(val, name):
     if val is None:
         return None
     raise ValueError(f"Config field '{name}' has unsupported type: {type(val)}")
-
 
 def _pick_device(gpu_arg: int | None):
     if torch.cuda.is_available():
@@ -83,7 +75,6 @@ def _pick_device(gpu_arg: int | None):
         return torch.device(f"cuda:{gpu_arg}")
     return torch.device("cpu")
 
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/emberformer.yaml")
@@ -96,35 +87,52 @@ def main():
     torch.manual_seed(cfg.get("global", {}).get("seed", 42))
     torch.backends.cudnn.benchmark = cfg.get("global", {}).get("cudnn_benchmark", True)
 
-    run = init_wandb(cfg)
+    # Resolve effective training params BEFORE W&B init (so name/tags reflect CLI overrides)
+    tcfg = cfg.get("train", {})
+    if args.model is not None:
+        tcfg["model"] = args.model
+    if args.epochs is not None:
+        tcfg["epochs"] = args.epochs
+    # Keep lr/wd in cfg as numbers
+    if "lr" in tcfg:
+        try:
+            tcfg["lr"] = float(tcfg["lr"])
+        except Exception:
+            pass
+
+    # Init W&B with short, informative name + auto-tags
+    script_name = pathlib.Path(__file__).stem  # e.g. "train_phase1"
+    device = _pick_device(args.gpu)
+    run = init_wandb(cfg, context={"script": script_name})
     if run:
         define_common_metrics()
 
     ds, dl = make_loader(cfg)
     Cs = ds.landscape_data.shape[0]
 
-    tcfg = cfg.get("train", {})
-    model_name = args.model or tcfg.get("model", "conv_head2d")
-    epochs = args.epochs or tcfg.get("epochs", 1)
+    model_name = tcfg.get("model", "conv_head2d")
+    epochs = tcfg.get("epochs", 1)
     lr = _coerce_float(tcfg.get("lr", 1e-3), "train.lr")
     wd = _coerce_float(tcfg.get("weight_decay", 0.0), "train.weight_decay")
 
-    device = _pick_device(args.gpu)
-    if run:
-        run.summary["device"] = str(device)
-        run.summary["dataset_size"] = len(ds)
     print(f"[phase1] using device: {device}")
-
     model = build_model(model_name, Cs).to(device)
     if run:
         watch_model(run, model, cfg)
+        run.summary.update({
+            "dataset_size": len(ds),
+            "model_name": model_name,
+            "model_params": sum(p.numel() for p in model.parameters()),
+            "sequence_length": cfg["data"].get("sequence_length", 3),
+            "batch_size": cfg["data"].get("batch_size", 4),
+        })
 
     criterion = nn.BCEWithLogitsLoss()
     optimizer = None if isinstance(model, CopyLast) else torch.optim.Adam(
         model.parameters(), lr=lr, weight_decay=wd
     )
 
-    # ---- Metrics (match deep-crowns + keep IoU) ----
+    # Metrics (deep-crowns set + IoU)
     acc  = torchmetrics.classification.BinaryAccuracy().to(device)
     prec = torchmetrics.classification.BinaryPrecision().to(device)
     rec  = torchmetrics.classification.BinaryRecall().to(device)
@@ -155,7 +163,6 @@ def main():
 
             with torch.no_grad():
                 preds = (torch.sigmoid(logits) > 0.5).int()
-                # micro averaging over all pixels
                 p = preds.view(-1)
                 y = target.int().view(-1)
                 acc.update(p, y)
@@ -175,14 +182,11 @@ def main():
                     step=step,
                 )
 
-            # keep a small sample for epoch-end preview
             last_batch_cpu = (fire.detach().cpu(), static.detach().cpu(),
                               wind.detach().cpu(), target.detach().cpu(), valid.detach().cpu())
             last_logits_cpu = logits.detach().cpu()
-
             step += 1
 
-        # end epoch
         epoch_metrics = {
             "val/acc":       acc.compute().item(),
             "val/precision": prec.compute().item(),
@@ -190,14 +194,11 @@ def main():
             "val/f1":        f1.compute().item(),
             "val/iou":       iou.compute().item(),
         }
-        # reset for next epoch
         for m in (acc, prec, rec, f1, iou):
             m.reset()
 
         if run:
             run.log({"epoch": epoch, **epoch_metrics}, step=step)
-
-            # downsampled preview at epoch end
             if cfg["wandb"].get("log_batch_preview", True) and last_batch_cpu is not None:
                 log_preview_from_batch(
                     run,
@@ -218,16 +219,14 @@ def main():
             f"IoU {epoch_metrics['val/iou']:.4f}"
         )
 
-    # Save & log model artifact (optional per config)
     if run and cfg["wandb"].get("log_artifacts", True):
         ckpt_dir = "checkpoints"
         os.makedirs(ckpt_dir, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         ckpt_path = os.path.join(
-            ckpt_dir, f"{cfg['wandb'].get('run_name','run')}-{model_name}-e{epochs}-{stamp}.pt"
+            ckpt_dir, f"{(cfg['wandb'].get('run_name') or run.name)}-{model_name}-e{epochs}-{stamp}.pt"
         )
         torch.save(model.state_dict(), ckpt_path)
-
         save_artifact(
             run,
             filepath=ckpt_path,
@@ -239,7 +238,6 @@ def main():
 
     if run:
         run.finish()
-
 
 if __name__ == "__main__":
     main()

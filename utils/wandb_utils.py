@@ -1,5 +1,6 @@
 import os
-from typing import Optional, Dict, Any
+import datetime as _dt
+from typing import Optional, Dict, Any, List
 import torch
 import torch.nn.functional as F
 
@@ -11,9 +12,58 @@ def _maybe_import_wandb():
         return None
 
 # -----------------------------
+# Helpers for naming & tags
+# -----------------------------
+def _fmt_lr(val) -> str:
+    try:
+        v = float(val)
+    except Exception:
+        return str(val)
+    return f"{v:.0e}" if v < 1e-2 else f"{v:g}"
+
+def _default_run_name(cfg: Dict[str, Any], context: Dict[str, Any]) -> str:
+    tcfg = cfg.get("train", {})
+    dcfg = cfg.get("data", {})
+    script = context.get("script", "train")
+    model  = tcfg.get("model", "unknown")
+    seq    = dcfg.get("sequence_length", "?")
+    lr     = _fmt_lr(tcfg.get("lr", "1e-3"))
+    now    = _dt.datetime.now().strftime("%m%d-%H%M")
+    return f"{script}-{model}-T{seq}-lr{lr}-{now}"
+
+def _build_run_name(cfg: Dict[str, Any], context: Dict[str, Any]) -> str:
+    wb   = cfg.get("wandb", {})
+    tmpl = wb.get("run_name_template")
+    if not tmpl:
+        return _default_run_name(cfg, context)
+    tcfg = cfg.get("train", {})
+    dcfg = cfg.get("data", {})
+    fmtdict = {
+        "script": context.get("script", "train"),
+        "model":  tcfg.get("model", "unknown"),
+        "seq":    dcfg.get("sequence_length", "?"),
+        "lr":     _fmt_lr(tcfg.get("lr", "1e-3")),
+        "time":   _dt.datetime.now().strftime("%m%d-%H%M"),
+    }
+    try:
+        return tmpl.format(**fmtdict)
+    except Exception:
+        return _default_run_name(cfg, context)
+
+def _auto_tags(cfg: Dict[str, Any], context: Dict[str, Any]) -> List[str]:
+    # Minimal, high-signal tags for filtering
+    tcfg = cfg.get("train", {})
+    dcfg = cfg.get("data", {})
+    return [
+        f"script:{context.get('script','train')}",
+        f"model:{tcfg.get('model','unknown')}",
+        f"T:{dcfg.get('sequence_length','?')}",
+    ]
+
+# -----------------------------
 # Core init + common definitions
 # -----------------------------
-def init_wandb(cfg: Dict[str, Any]):
+def init_wandb(cfg: Dict[str, Any], *, context: Optional[Dict[str, Any]] = None):
     wb = cfg.get("wandb", {})
     if not wb.get("enabled", True) or wb.get("mode", "online") == "disabled":
         return None
@@ -22,17 +72,25 @@ def init_wandb(cfg: Dict[str, Any]):
         print("[wandb] not installed; continuing without logging.")
         return None
 
+    context = dict(context or {})
     mode = wb.get("mode", "online")
-    os.environ["WANDB_MODE"] = mode  # respect offline/online
+    os.environ["WANDB_MODE"] = mode
+
+    name = wb.get("run_name") or _build_run_name(cfg, context)
+    tags = list(wb.get("tags", []))
+    if wb.get("auto_tags", False):
+        tags.extend(_auto_tags(cfg, context))
 
     run = wandb.init(
         project=wb.get("project", "emberformer"),
         entity=wb.get("entity") or None,
-        name=wb.get("run_name", "phase"),
-        tags=wb.get("tags", []),
+        name=name,
+        tags=tags,
         notes=wb.get("notes", ""),
         config=cfg,
         mode=mode if mode in ("online", "offline", "disabled") else "online",
+        group=wb.get("group") or None,
+        job_type=wb.get("job_type") or None,
     )
     return run
 
@@ -62,22 +120,16 @@ def log_batch_shapes(run, fire_batch: torch.Tensor, epoch: int, step: int):
     wandb = _maybe_import_wandb()
     if wandb is None:
         return
-    _, _, H, W, T_max = fire_batch.shape
-    wandb.log({"batch/H": H, "batch/W": W, "batch/T_max": T_max, "epoch": epoch}, step=step)
-    run.summary["H"] = H
-    run.summary["W"] = W
+    _, _, _, _, T_max = fire_batch.shape
+    wandb.log({"batch/T_max": T_max, "epoch": epoch}, step=step)
     run.summary["T_max"] = T_max
 
 def _shrink_1hw(img_1hw: torch.Tensor, size: int = 160) -> torch.Tensor:
-    """
-    Downsample a single [1,H,W] tensor to [1,size,size] using nearest (keeps binary masks crisp).
-    """
-    x = img_1hw
-    if x.ndim != 3 or x.shape[0] != 1:
+    if img_1hw.ndim != 3 or img_1hw.shape[0] != 1:
         raise ValueError("Expected [1,H,W] tensor.")
-    x = x.unsqueeze(0).float()                                # [1,1,H,W]
-    x = F.interpolate(x, size=(size, size), mode="nearest")   # [1,1,s,s]
-    return x.squeeze(0)                                       # [1,s,s]
+    x = img_1hw.unsqueeze(0).float()                 # [1,1,H,W]
+    x = F.interpolate(x, size=(size, size), mode="nearest")
+    return x.squeeze(0)                              # [1,s,s]
 
 def log_preview_from_batch(
     run,
@@ -88,11 +140,6 @@ def log_preview_from_batch(
     max_images: int = 8,
     size: int = 160,
 ):
-    """
-    Logs a preview panel. If `logits` is provided, logs pred/target/last_fire.
-    Otherwise logs target/last_fire (useful for phase0).
-    batch: (fire, static, wind, target, valid)
-    """
     if run is None:
         return
     wandb = _maybe_import_wandb()
@@ -109,7 +156,7 @@ def log_preview_from_batch(
 
     if logits is not None:
         probs = torch.sigmoid(logits).detach().cpu()
-        preds = (probs > 0.5).float()  # [B,1,H,W]
+        preds = (probs > 0.5).float()
         for i in range(n):
             images.append(wandb.Image(_shrink_1hw(preds[i], size),  caption=f"pred[{i}]"))
             images.append(wandb.Image(_shrink_1hw(target[i], size), caption=f"target[{i}]"))

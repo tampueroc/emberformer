@@ -1,42 +1,27 @@
 # =========================
 # EmberFormer master config
-# Phase 0: data layer + W&B
+# Phase 0/1
 # =========================
 
 global:
   seed: 42
-  cudnn_benchmark: true        # leave true if H/W fixed; set false if H/W varies by sample
+  cudnn_benchmark: true
 
 data:
-  # Base directory with the folder layout:
-  #   landscape/Input_Geotiff.tif
-  #   landscape/indices.json
-  #   landscape/Weathers/*.csv
-  #   landscape/WeatherHistory.csv
-  #   fire_frames/sequence_xxx/*.png
-  #   isochrones/sequence_xxx/*.png
   data_dir: "~/data/deep_crown_dataset/organized_spreads"
-
-  # Temporal slicing
-  sequence_length: 3            # history length (T); target is next frame
-
-  # Dataloader
+  sequence_length: 3
   batch_size: 4
   num_workers: 4
   pin_memory: true
   drop_last: false
   shuffle: true
 
-  # Collation (our collate does left-padding in time by default)
-  collate: left_pad_time        # reserved for future; current code uses emberformer.data.collate_fn
-
-  # Optional spatial enforcement (Phase 0 can warn/fail if H/W differ across samples)
-  enforce_spatial_size: null    # e.g. [400, 400] to force pad/resize; null = no enforcement
-  resize_mode: pad              # "pad" or "resize" (used only if enforce_spatial_size set)
+  collate: left_pad_time
+  enforce_spatial_size: null
+  resize_mode: pad
   constant_pad_value: 0
 
 encoding:
-  # PNG channel/value that denotes fire/isochrones = 1
   fire_channel: 1
   fire_value: 231
   isochrone_channel: 1
@@ -50,34 +35,40 @@ weather:
 
 wandb:
   enabled: true
-  mode: offline            # or online
+  mode: online                # or offline
   project: "emberformer"
   entity: ""
-  run_name: "phase1-sanity"
+
+  # leave run_name empty to use the template
+  run_name:
+  run_name_template: "{script}-{model}-T{seq}-lr{lr}-{time}"
+
+  # Optional manual tags get merged with auto-tags below
+  tags: []
+  auto_tags: true             # adds: script:{script}, model:{model}, T:{seq}
 
   # preview controls
-  log_batch_preview: true   # keep previews enabled
-  max_preview_images: 2     # fewer images per epoch
-  preview_size: 160         # downsample to ~160 px edge before logging
+  log_batch_preview: true
+  max_preview_images: 2
+  preview_size: 160
 
-  # reduce overhead in early phases
-  watch: false              # don't log gradients
-  log_artifacts: false      # skip model files for now
+  # reduce overhead early on
+  watch: false
+  log_artifacts: false
 
 train:
-  model: copy_last
+  model: copy_last            # copy_last | conv_head2d | tiny3d
   epochs: 1
   lr: 1e-3
   weight_decay: 0.0
   log_images_every: 200
 
 checks:
-  sample_count: 16                # how many samples to scan for quick stats
-  fail_on_mixed_hw: true          # raise if crops differ in H/W across sequences
-  assert_ws_wd_present: true      # ensure weather CSVs have WS/WD columns
-  assert_frames_match: true       # ensure #fire_frames == #isochrones in each sequence
+  sample_count: 16
+  fail_on_mixed_hw: true
+  assert_ws_wd_present: true
+  assert_frames_match: true
 
-# Future (not used in Phase 0 but reserved so the file survives):
 patchify_on_disk:
   enabled: false
   patch_size: 16
