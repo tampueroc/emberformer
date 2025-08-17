@@ -49,16 +49,16 @@ weather:
   wd_col: "WD"
 
 wandb:
-  enabled: false
-  mode: disabled        # online | offline | disabled (if disabled, we skip init entirely)
+  enabled: true
+  mode: offline            # online | offline | disabled
   project: "emberformer"
-  entity: ""          # set if you use a team/account; else leave blank
-  run_name: "phase0-sanity"
-  tags: ["phase0", "data", "sanity"]
-  notes: "Raw dataset pass + batch collation checks"
+  entity: ""
+  run_name: "phase1-sanity"
+  tags: ["phase1", "sanity", "minimal-model"]
+  notes: "Phase 1: minimal model + dataloader + training loop smoke test"
   log_artifacts: true
-  log_batch_preview: true         # log a grid from the first batch
-  log_norm_stats: true            # log min/max per landscape band
+  log_batch_preview: true
+  log_norm_stats: true
   max_preview_images: 8
 
 checks:
