@@ -65,12 +65,20 @@ class TokenFireDataset(torch.utils.data.Dataset):
         P = int(meta["patch_size"])
         y_patch = self._target_patch_avg(seq_id_int, t_next, P)
 
+        static_np = np.asarray(static).copy()
+        fire_np   = np.asarray(fire_last).copy()
+        wind_np   = np.asarray(wind[t_last]).copy()a
+        valid_np  = np.asarray(valid).copy()
+
+        gH = meta.get("Gy") or meta.get("grid_h")
+        gW = meta.get("Gx") or meta.get("grid_w")
+
         X = {
-            "static": torch.from_numpy(np.asarray(static)).float().clone(),          # [N,Cs]
-            "fire_last": torch.from_numpy(np.asarray(fire_last)).float().clone(),    # [N]
-            "wind_last": torch.from_numpy(np.asarray(wind[t_last])).float().clone(), # [2]
-            "valid": torch.from_numpy(np.asarray(valid)).bool().clone(),             # [N]
-            "meta": meta,
+            "static":    torch.from_numpy(static_np).float(),   # [N,Cs]
+            "fire_last": torch.from_numpy(fire_np).float(),     # [N]
+            "wind_last": torch.from_numpy(wind_np).float(),     # [2]
+            "valid":     torch.from_numpy(valid_np).bool(),     # [N]a
+            "meta":      (int(gH), int(gW)),
         }
         y = y_patch.float()                                                  # [N]
         return X, y

@@ -3,6 +3,7 @@ from collections import defaultdict
 from torch.cuda.amp import autocast, GradScaler
 import torch
 import torch.nn as nn
+from torch import amp
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import torchmetrics
@@ -47,8 +48,7 @@ def _prep_batch(batch):
     metas  = X["meta"]
 
     B, N, Cs = static.shape
-    gH = metas[0].get("Gy") or metas[0].get("grid_h")
-    gW = metas[0].get("Gx") or metas[0].get("grid_w")
+    gH, gW = metas[0]
     assert gH * gW == N, f"N={N} != Gy*Gx={gH*gW}"
 
     static_grid = static.permute(0, 2, 1).contiguous().view(B, Cs, gH, gW)
@@ -169,10 +169,11 @@ def main():
                         drop_last=False)
 
     if run:
+        gh0, gw0 = X0["meta"]
         run.summary.update({
             "dataset_size": len(ds),
-            "grid_h": X0["meta"].get("Gy") or X0["meta"].get("grid_h"),
-            "grid_w": X0["meta"].get("Gx") or X0["meta"].get("grid_w"),
+            "grid_h": gh0,
+            "grid_w": gw0,
             "in_channels": in_ch,
             "stage": "C",
             "model_name": "UNetS",
@@ -191,7 +192,7 @@ def main():
     lr = _coerce_float(args.lr, "cli.lr") or _coerce_float(cfg["train"].get("lr", 3e-4), "train.lr")
     wd = _coerce_float(cfg["train"].get("weight_decay", 0.0), "train.weight_decay")
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
-    scaler = GradScaler(enabled=(device.type == "cuda"))
+    scaler = amp.GradScaler('cuda', enabled=(device.type == "cuda"))
 
     # torchmetrics (train & val)
     def _make_metrics():
@@ -220,7 +221,7 @@ def main():
             mask = mask.to(device, non_blocking=True)
 
             opt.zero_grad(set_to_none=True)
-            with autocast(enabled=(device.type == "cuda")):
+            with amp.autocast('cuda', enabled=(device.type == "cuda")):
                 logits = model(x_in)
                 loss = _masked_bce(logits, y_map, mask)
 
@@ -263,7 +264,7 @@ def main():
                 x_in = x_in.to(device, non_blocking=True)
                 y_map = y_map.to(device, non_blocking=True)
                 mask = mask.to(device, non_blocking=True)
-                with autocast(enabled=(device.type == "cuda")):
+                with amp.autocast('cuda', enabled=(device.type == "cuda")):
                     logits = model(x_in)
                     vloss = _masked_bce(logits, y_map, mask)
                 val_loss_total += float(vloss)
