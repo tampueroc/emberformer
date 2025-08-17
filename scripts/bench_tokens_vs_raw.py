@@ -30,14 +30,14 @@ def main():
     cache_root = os.path.join(os.path.expanduser(d["data_dir"]), pcfg.get("save_dir","patch_cache"))
 
     raw_ds = RawFireDataset(d["data_dir"], sequence_length=d.get("sequence_length",3))
-    tok_ds = TokenFireDataset(cache_root, sequence_length=d.get("sequence_length",3))
+    tok_ds = TokenFireDataset(cache_root, raw_root=d["data_dir"], sequence_length=d.get("sequence_length",3))
 
     raw_dl = DataLoader(raw_ds, batch_size=d.get("batch_size",4), shuffle=True,
                         num_workers=d.get("num_workers",4), pin_memory=d.get("pin_memory",True),
                         drop_last=d.get("drop_last",False), collate_fn=collate_fn)
     tok_dl = DataLoader(tok_ds, batch_size=d.get("batch_size",4), shuffle=True,
                         num_workers=d.get("num_workers",4), pin_memory=d.get("pin_memory",True),
-                        drop_last=d.get("drop_last",False), collate_fn=collate_fn)
+                        drop_last=d.get("drop_last",False))
 
     dt_raw, n = time_loader(raw_dl, iters=args.iters)
     dt_tok, _ = time_loader(tok_dl,  iters=args.iters)

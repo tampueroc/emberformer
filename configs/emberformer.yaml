@@ -71,17 +71,14 @@ checks:
 
 
 patchify_on_disk:
-  enabled: true                  # turn on to build/use the cache
-  cache_dir: "~/data/emberformer/patch_cache"   # << shared HDD
-  patch_size: 16                 # 16x16 patches (400x400 -> pad to 416x416)
-  stride: 16                     # non-overlapping
-  pad_mode: "pad_to_multiple"    # or "edge" to replicate edges
-  pad_multiple: 16               # used when pad_mode == pad_to_multiple
-  constant_pad_value: 0          # used when pad_mode == "constant"
-  log_artifact: true             # optionally log the cache folder to W&B
+  enabled: true
+  cache_dir: "~/data/emberformer/patch_cache"
+  patch_size: 16
+  stride: 16                 # unused for now (non-overlapping)
+  pad_mode: "strict"         # <— assert H%P==0 and W%P==0, no padding
+  log_artifact: true
 
-  progress_use_tqdm: true          # terminal progress bar
-  progress_log_every: 5            # log to W&B every N sequences (if enabled)
-  progress_log_to_wandb: true      # stream build counters to W&B
+  progress_use_tqdm: true
+  progress_log_every: 5
+  progress_log_to_wandb: true
   preview_n: 1
-

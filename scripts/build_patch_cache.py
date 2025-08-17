@@ -35,30 +35,33 @@ def _write_jsonl(path, rec):
 def _avgpool_grid(x_chw: torch.Tensor, P: int, pad_mode: str, const_val: float = 0.0):
     """
     x_chw: [C,H,W]; returns (grid[C, Gy, Gx], meta)
-    meta: dict(H,W,H_pad,W_pad,Gy,Gx,P)
     """
     C, H, W = x_chw.shape
-    if pad_mode == "pad_to_multiple":
-        pad_h = (P - (H % P)) % P
-        pad_w = (P - (W % P)) % P
-        pad = (0, pad_w, 0, pad_h)
-        x_pad = F.pad(x_chw.unsqueeze(0), pad, mode="constant", value=0.0).squeeze(0)
-    elif pad_mode == "edge":
-        pad_h = (P - (H % P)) % P
-        pad_w = (P - (W % P)) % P
-        pad = (0, pad_w, 0, pad_h)
+    if pad_mode == "strict":
+        if (H % P) != 0 or (W % P) != 0:
+            raise RuntimeError(f"strict mode: H={H}, W={W} must be divisible by P={P}")
+        grid = F.avg_pool2d(x_chw, kernel_size=P, stride=P)  # [C,Gy,Gx]
+        Gy, Gx = grid.shape[-2:]
+        meta = dict(H=H, W=W, H_pad=H, W_pad=W, Gy=Gy, Gx=Gx, P=P, pad_bottom=0, pad_right=0)
+        return grid, meta
+
+    # legacy pad modes (kept if you flip the config)
+    pad_h = (P - (H % P)) % P
+    pad_w = (P - (W % P)) % P
+    pad = (0, pad_w, 0, pad_h)
+    if pad_mode == "edge":
         x_pad = F.pad(x_chw.unsqueeze(0), pad, mode="replicate").squeeze(0)
     elif pad_mode == "constant":
-        pad_h = (P - (H % P)) % P
-        pad_w = (P - (W % P)) % P
-        pad = (0, pad_w, 0, pad_h)
         x_pad = F.pad(x_chw.unsqueeze(0), pad, mode="constant", value=const_val).squeeze(0)
+    elif pad_mode == "pad_to_multiple":
+        x_pad = F.pad(x_chw.unsqueeze(0), pad, mode="constant", value=0.0).squeeze(0)
     else:
         raise ValueError(f"unknown pad_mode {pad_mode}")
 
-    grid = F.avg_pool2d(x_pad, kernel_size=P, stride=P)  # [C, Gy, Gx]
+    grid = F.avg_pool2d(x_pad, kernel_size=P, stride=P)
     Gy, Gx = grid.shape[-2:]
-    meta = dict(H=H, W=W, H_pad=H+pad_h, W_pad=W+pad_w, Gy=Gy, Gx=Gx, P=P)
+    meta = dict(H=H, W=W, H_pad=H+pad_h, W_pad=W+pad_w, Gy=Gy, Gx=Gx, P=P,
+                pad_bottom=pad_h, pad_right=pad_w)
     return grid, meta
 
 def _target_patch_avg_png(iso_png_path: str, fire_value: int, P: int):
@@ -74,33 +77,43 @@ def _target_patch_avg_png(iso_png_path: str, fire_value: int, P: int):
 # ---------------
 # Build one seq
 # ---------------
-def build_one_sequence(ds: RawFireDataset, seq_id: str, out_dir: str, pcfg: dict):
+def build_one_sequence(ds: RawFireDataset, seq_id: str, out_dir: str, pcfg: dict, fire_value: int):
     P = int(pcfg["patch_size"])
-    pad_mode = pcfg.get("pad_mode", "pad_to_multiple")
+    pad_mode = pcfg.get("pad_mode", "strict")
     const_val = float(pcfg.get("constant_pad_value", 0.0))
 
-    # crop static once
+    # crop static once from the big GeoTIFF using indices
     y0, y1, x0, x1 = ds.indices[seq_id]
     static_chw_np = ds.landscape_data[:, y0:y1, x0:x1].values  # (Cs, H, W)
     static_chw = torch.from_numpy(static_chw_np).float()
     Cs, H, W = static_chw.shape
 
+    # strict: H,W must be divisible by P (e.g., 400 % 16 == 0)
     static_grid, meta = _avgpool_grid(static_chw, P, pad_mode=pad_mode, const_val=const_val)
     Gy, Gx = meta["Gy"], meta["Gx"]
     N = Gy * Gx
     static_tokens = static_grid.view(Cs, -1).T.contiguous().numpy().astype(np.float32)  # [N, Cs]
 
-    # valid (any real pixel contributes)
-    # With pad_to_multiple + constant 0, any patch that receives only pad stays zero → treat as valid=False
-    valid_tokens = (static_grid.sum(dim=0) > 0).view(-1).cpu().numpy().astype(np.bool_)
+    # strict: all tokens valid
+    valid_tokens = np.ones((N,), dtype=np.bool_)
 
     fire_root = os.path.join(ds.data_dir, "fire_frames", f"sequence_{int(seq_id):03d}")
-    iso_root  = os.path.join(ds.data_dir, "isochrones",   f"sequence_{int(seq_id):03d}")
+    iso_root  = os.path.join(ds.data_dir, "isochrones",  f"sequence_{int(seq_id):03d}")
     fire_files = sorted(f for f in os.listdir(fire_root) if f.endswith(".png"))
     iso_files  = sorted(f for f in os.listdir(iso_root)  if f.endswith(".png"))
     assert len(fire_files) == len(iso_files), f"mismatch frames on seq {seq_id}"
     T_all = len(fire_files)
 
+    # assert PNG size matches static H,W in strict mode
+    sample_img = read_image(os.path.join(fire_root, fire_files[0]))  # [3,h,w]
+    h_png, w_png = sample_img.shape[1], sample_img.shape[2]
+    if pad_mode == "strict":
+        if (h_png != H) or (w_png != W):
+            raise RuntimeError(f"seq {seq_id}: PNG {h_png}x{w_png} != static {H}x{W} in strict mode")
+        if (h_png % P) != 0 or (w_png % P) != 0:
+            raise RuntimeError(f"seq {seq_id}: PNG {h_png}x{w_png} not divisible by P={P}")
+
+    # wind table
     weather_file = ds.weather_history.iloc[int(seq_id) - 1].values[0].split("Weathers/")[1]
     wdf = ds.weathers[weather_file]
 
@@ -108,13 +121,12 @@ def build_one_sequence(ds: RawFireDataset, seq_id: str, out_dir: str, pcfg: dict
     np.save(os.path.join(out_dir, "static_tokens.npy"), static_tokens)
     np.save(os.path.join(out_dir, "valid_tokens.npy"),  valid_tokens)
 
-    # wind and fire tokens per frame
     wind_list = []
     fire_index_to_file = {}
 
     for t, fname in enumerate(fire_files):
-        img = read_image(os.path.join(fire_root, fname))  # [3,Hseq,Wseq]
-        fire = (img[1, y0:y1, x0:x1] == 231).float().unsqueeze(0)  # [1,H,W]
+        img = read_image(os.path.join(fire_root, fname))  # [3,H,W]
+        fire = (img[1] == fire_value).float().unsqueeze(0)  # [1,H,W]  (no extra crop)
         fire_grid, _ = _avgpool_grid(fire, P, pad_mode=pad_mode, const_val=0.0)
         fire_tokens = fire_grid.view(-1).contiguous().numpy().astype(np.float32)  # [N]
         np.save(os.path.join(out_dir, f"fire_tokens_t{t:03d}.npy"), fire_tokens)
@@ -126,7 +138,6 @@ def build_one_sequence(ds: RawFireDataset, seq_id: str, out_dir: str, pcfg: dict
     wind = np.stack(wind_list, axis=0)  # [T,2]
     np.save(os.path.join(out_dir, "wind.npy"), wind)
 
-    # meta
     meta.update({
         "sequence_id": seq_id,
         "patch_size": P,
@@ -137,17 +148,14 @@ def build_one_sequence(ds: RawFireDataset, seq_id: str, out_dir: str, pcfg: dict
         "valid_tokens": "valid_tokens.npy",
         "wind": "wind.npy",
         "fires": fire_index_to_file,
-        "fire_value": 231,
+        "fire_value": int(fire_value),
     })
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
-    # also return a tiny preview tensor (last fire frame grid) for optional logging
     preview = torch.from_numpy(np.load(os.path.join(out_dir, fire_index_to_file[T_all-1]))).view(Gy, Gx)
-    return {
-        "Gy": Gy, "Gx": Gx, "N": N, "T": T_all, "Cs": Cs, "H": H, "W": W,
-        "preview": preview,  # [Gy,Gx] float in [0,1]
-    }
+    return {"Gy": Gy, "Gx": Gx, "N": N, "T": T_all, "Cs": Cs, "H": H, "W": W, "preview": preview}
+
 
 def persist_norm_stats(cache_root: str, ds: RawFireDataset):
     stats_dir = _ensure_dir(os.path.join(cache_root, "_stats"))
@@ -195,17 +203,22 @@ def _maybe_log_artifact(run, cfg, cache_root):
     pc = cfg.get("patchify_on_disk", {})
     if run is None or not pc.get("log_artifact", True):
         return
-    art = run.Artifact(
-        name="patch_cache",
-        type="dataset",
+    try:
+        import wandb
+    except Exception:
+        return
+    art = wandb.Artifact(
+        name=f"patch-cache-{time.strftime('%m%d-%H%M')}",
+        type="patch_cache",
         metadata={
             "patch_size": pc["patch_size"],
-            "stride": pc["stride"],
-            "pad_mode": pc["pad_mode"],
+            "stride": pc.get("stride", 16),
+            "pad_mode": pc.get("pad_mode", "strict"),
         },
     )
     art.add_dir(cache_root)
     run.log_artifact(art)
+
 
 # -----------
 # Main entry
@@ -265,7 +278,8 @@ def main():
                     meta = json.load(f)
                 stats = {"T": meta.get("num_frames", 0), "N": meta.get("num_patches", 0)}
             else:
-                stats = build_one_sequence(ds, seq, out_dir, pcfg)
+                fire_val = int(cfg.get("encoding", {}).get("fire_value", 231))
+                stats = build_one_sequence(ds, seq, out_dir, pcfg, fire_val)
 
             dt = time.time() - start
             seq_T = int(stats["T"])
