@@ -26,6 +26,18 @@ def _pick_device(gpu_arg: int | None):
         return torch.device(f"cuda:{gpu_arg}")
     return torch.device("cpu")
 
+def _coerce_float(val, name):
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        try:
+            return float(val)
+        except ValueError:
+            raise ValueError(f"Config field '{name}' must be a number or string float, got: {val!r}")
+    if val is None:
+        return None
+    raise ValueError(f"Config field '{name}' has unsupported type: {type(val)}")
+
 def _prep_batch(batch):
     X, y = batch
     static = X["static"]      # [B,N,Cs]
@@ -176,8 +188,9 @@ def main():
     # Model/optim
     base = args.base or int(cfg.get("stage_c", {}).get("base_channels", 32))
     model = UNetS(in_ch=in_ch, base=base).to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=(args.lr or cfg["train"].get("lr", 3e-4)),
-                           weight_decay=cfg["train"].get("weight_decay", 1e-4))
+    lr = _coerce_float(args.lr, "cli.lr") or _coerce_float(cfg["train"].get("lr", 3e-4), "train.lr")
+    wd = _coerce_float(cfg["train"].get("weight_decay", 0.0), "train.weight_decay")
+    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
     scaler = GradScaler(enabled=(device.type == "cuda"))
 
     # torchmetrics (train & val)

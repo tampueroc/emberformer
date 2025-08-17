@@ -66,10 +66,10 @@ class TokenFireDataset(torch.utils.data.Dataset):
         y_patch = self._target_patch_avg(seq_id_int, t_next, P)
 
         X = {
-            "static": torch.from_numpy(np.asarray(static)).float(),          # [N,Cs]
-            "fire_last": torch.from_numpy(np.asarray(fire_last)).float(),    # [N]
-            "wind_last": torch.from_numpy(np.asarray(wind[t_last])).float(), # [2]
-            "valid": torch.from_numpy(np.asarray(valid)).bool(),             # [N]
+            "static": torch.from_numpy(np.asarray(static)).float().clone(),          # [N,Cs]
+            "fire_last": torch.from_numpy(np.asarray(fire_last)).float().clone(),    # [N]
+            "wind_last": torch.from_numpy(np.asarray(wind[t_last])).float().clone(), # [2]
+            "valid": torch.from_numpy(np.asarray(valid)).bool().clone(),             # [N]
             "meta": meta,
         }
         y = y_patch.float()                                                  # [N]
