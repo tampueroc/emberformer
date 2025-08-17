@@ -49,8 +49,8 @@ weather:
   wd_col: "WD"
 
 wandb:
-  enabled: true
-  mode: online        # online | offline | disabled (if disabled, we skip init entirely)
+  enabled: false
+  mode: disabled        # online | offline | disabled (if disabled, we skip init entirely)
   project: "emberformer"
   entity: ""          # set if you use a team/account; else leave blank
   run_name: "phase0-sanity"
