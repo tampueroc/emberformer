@@ -124,8 +124,12 @@ def main():
         model.parameters(), lr=lr, weight_decay=wd
     )
 
-    acc = torchmetrics.classification.BinaryAccuracy().to(device)
-    iou = torchmetrics.classification.BinaryJaccardIndex().to(device)
+    # ---- Metrics (match deep-crowns + keep IoU) ----
+    acc  = torchmetrics.classification.BinaryAccuracy().to(device)
+    prec = torchmetrics.classification.BinaryPrecision().to(device)
+    rec  = torchmetrics.classification.BinaryRecall().to(device)
+    f1   = torchmetrics.classification.BinaryF1Score().to(device)
+    iou  = torchmetrics.classification.BinaryJaccardIndex().to(device)
 
     step = 0
     shapes_logged = False
@@ -151,8 +155,14 @@ def main():
 
             with torch.no_grad():
                 preds = (torch.sigmoid(logits) > 0.5).int()
-                acc.update(preds, target.int())
-                iou.update(preds, target.int())
+                # micro averaging over all pixels
+                p = preds.view(-1)
+                y = target.int().view(-1)
+                acc.update(p, y)
+                prec.update(p, y)
+                rec.update(p, y)
+                f1.update(p, y)
+                iou.update(p, y)
 
             if run:
                 run.log(
@@ -173,11 +183,19 @@ def main():
             step += 1
 
         # end epoch
-        epoch_acc, epoch_iou = acc.compute().item(), iou.compute().item()
-        acc.reset(); iou.reset()
+        epoch_metrics = {
+            "val/acc":       acc.compute().item(),
+            "val/precision": prec.compute().item(),
+            "val/recall":    rec.compute().item(),
+            "val/f1":        f1.compute().item(),
+            "val/iou":       iou.compute().item(),
+        }
+        # reset for next epoch
+        for m in (acc, prec, rec, f1, iou):
+            m.reset()
 
         if run:
-            run.log({"epoch": epoch, "val/acc": epoch_acc, "val/iou": epoch_iou}, step=step)
+            run.log({"epoch": epoch, **epoch_metrics}, step=step)
 
             # downsampled preview at epoch end
             if cfg["wandb"].get("log_batch_preview", True) and last_batch_cpu is not None:
@@ -190,9 +208,17 @@ def main():
                     size=int(cfg["wandb"].get("preview_size", 160)),
                 )
 
-        print(f"[epoch {epoch}] loss ~ {loss.item():.4f} | acc {epoch_acc:.4f} | IoU {epoch_iou:.4f}")
+        print(
+            f"[epoch {epoch}] "
+            f"loss ~ {loss.item():.4f} | "
+            f"acc {epoch_metrics['val/acc']:.4f} | "
+            f"prec {epoch_metrics['val/precision']:.4f} | "
+            f"rec {epoch_metrics['val/recall']:.4f} | "
+            f"f1 {epoch_metrics['val/f1']:.4f} | "
+            f"IoU {epoch_metrics['val/iou']:.4f}"
+        )
 
-    # Save & log model artifact
+    # Save & log model artifact (optional per config)
     if run and cfg["wandb"].get("log_artifacts", True):
         ckpt_dir = "checkpoints"
         os.makedirs(ckpt_dir, exist_ok=True)
