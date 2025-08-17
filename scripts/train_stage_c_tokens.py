@@ -45,14 +45,6 @@ def _coerce_float(val, name):
 # Batch shaping
 # ----------------
 def _extract_grid_hw(metas):
-    """
-    metas is collated by PyTorch; depending on batch size it can be:
-      - torch.Tensor[B,2] of ints
-      - list/tuple of length B with (gH,gW)
-      - torch.Tensor[2] when B==1 through some collations
-      - plain (gH,gW) when no collation
-    We robustly read (gH,gW) from the first sample.
-    """
     if torch.is_tensor(metas):
         if metas.ndim == 2:
             gH, gW = int(metas[0, 0].item()), int(metas[0, 1].item())
@@ -98,8 +90,7 @@ def _prep_batch(batch):
 # ----------------
 def _masked_bce(logits, y, mask, pos_weight=None):
     """
-    logits, y, mask: [B,1,Gy,Gx]
-    pos_weight: torch scalar or None
+    logits, y: same spatial size (grid or pixel); mask: boolean or {0,1}
     """
     loss_map = F.binary_cross_entropy_with_logits(logits, y, reduction="none", pos_weight=pos_weight)
     loss_map = loss_map * mask.float()
@@ -108,7 +99,7 @@ def _masked_bce(logits, y, mask, pos_weight=None):
 
 def _auto_pos_weight(y_map, mask):
     """
-    y_map in [0,1], mask boolean; returns a scalar tensor ~ (neg_mass / pos_mass).
+    y_map in [0,1], mask boolean; returns scalar tensor ~ (neg_mass / pos_mass).
     For fractional targets this treats 'mass' as the sum of y values.
     """
     y = (y_map * mask).float()
@@ -130,7 +121,7 @@ def _make_or_load_sequence_split(ds, cache_root: str, train_frac=0.8, val_frac=0
         with open(path, "r") as f:
             return json.load(f), path
 
-    seqs = sorted(ds.seq_dirs)  # ["sequence_001", ...]
+    seqs = sorted(ds.seq_dirs)
     rng = random.Random(seed)
     rng.shuffle(seqs)
 
@@ -168,7 +159,7 @@ def main():
     ap.add_argument("--config", default="configs/stage_c.yaml")
     ap.add_argument("--base", type=int, default=None)
     ap.add_argument("--gpu", type=int, default=None)
-    ap.add_argument("--epochs", type=int, default=None)  # ← do not force 1 epoch
+    ap.add_argument("--epochs", type=int, default=None)  # use YAML if not provided
     ap.add_argument("--batch_size", type=int, default=None)
     ap.add_argument("--lr", type=float, default=None)
     ap.add_argument("--cache_dir", type=str, default=None)
@@ -184,7 +175,7 @@ def main():
     pcfg = cfg.get("patchify_on_disk", {})
     cache_root = os.path.expanduser(args.cache_dir or pcfg["cache_dir"])
     raw_root   = os.path.expanduser(d["data_dir"])
-    P = int(pcfg.get("patch_size", 16))  # patch size for unpatchify
+    P = int(pcfg.get("patch_size", 16))  # patch size (for unpatchify)
 
     ds = TokenFireDataset(
         cache_root, raw_root=raw_root,
@@ -259,7 +250,7 @@ def main():
     opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
     scaler = amp.GradScaler('cuda', enabled=(device.type == "cuda"))
 
-    # torchmetrics
+    # torchmetrics (PIXEL space)
     def _make_metrics():
         return dict(
             acc  = torchmetrics.classification.BinaryAccuracy().to(device),
@@ -268,8 +259,8 @@ def main():
             f1   = torchmetrics.classification.BinaryF1Score().to(device),
             iou  = torchmetrics.classification.BinaryJaccardIndex().to(device),
         )
-    Mtr = _make_metrics()   # grid-space metrics (cheap, for monitoring)
-    Mva = _make_metrics()   # PIXEL-space metrics (after unpatchify)
+    Mtr = _make_metrics()   # pixel-space train metrics
+    Mva = _make_metrics()   # pixel-space val metrics
 
     step = 0
     epochs = args.epochs if args.epochs is not None else cfg["train"].get("epochs", 5)
@@ -277,40 +268,44 @@ def main():
     preview_size = int(cfg["wandb"].get("preview_size", 160))
 
     for ep in range(epochs):
-        # ----- train (grid space) -----
+        # ----- TRAIN (unpatchify → PIXEL loss/metrics) -----
         model.train()
         for batch in dl_train:
             x_in, y_map, mask, _ = _prep_batch(batch)
-            x_in = x_in.to(device, non_blocking=True)
+            x_in  = x_in.to(device, non_blocking=True)
             y_map = y_map.to(device, non_blocking=True)
-            mask = mask.to(device, non_blocking=True)
-
-            # pos_weight
-            if posw_cfg == "auto":
-                pw = _auto_pos_weight(y_map, mask).detach()
-                pos_weight = pw.to(device)
-            elif isinstance(posw_cfg, (int, float)):
-                pos_weight = torch.tensor(float(posw_cfg), device=device)
-            else:
-                pos_weight = None
+            mask  = mask.to(device, non_blocking=True)
 
             opt.zero_grad(set_to_none=True)
             with amp.autocast('cuda', enabled=(device.type == "cuda")):
-                logits = model(x_in)                                   # [B,1,Gy,Gx]
-                loss = _masked_bce(logits, y_map, mask, pos_weight)    # grid loss
+                logits_grid = model(x_in)                               # [B,1,Gy,Gx]
+                # unpatchify logits/targets/mask to pixel space
+                logits_pix  = F.interpolate(logits_grid, scale_factor=P, mode="nearest")
+                y_pix       = F.interpolate(y_map,      scale_factor=P, mode="nearest")
+                mask_pix    = F.interpolate(mask.float(), scale_factor=P, mode="nearest").bool()
+
+                # pos_weight in PIXEL space (auto or fixed)
+                if posw_cfg == "auto":
+                    pos_weight = _auto_pos_weight(y_pix, mask_pix).detach().to(device)
+                elif isinstance(posw_cfg, (int, float)):
+                    pos_weight = torch.tensor(float(posw_cfg), device=device)
+                else:
+                    pos_weight = None
+
+                loss = _masked_bce(logits_pix, y_pix, mask_pix, pos_weight)
 
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()
 
-            # grid-space quick metrics (threshold on grid)
+            # pixel-space metrics
             with torch.no_grad():
-                probs = torch.sigmoid(logits.float())
-                preds_bin = (probs > pred_thresh).int()
-                target_bin = (y_map > target_thresh).int()
-                m = mask.bool()
-                p = preds_bin[m].flatten()
-                yb = target_bin[m].flatten()
+                probs_pix = torch.sigmoid(logits_pix.float())
+                preds_bin_pix  = (probs_pix > pred_thresh).int()
+                target_bin_pix = (y_pix     > target_thresh).int()
+                m = mask_pix
+                p = preds_bin_pix[m].flatten()
+                yb = target_bin_pix[m].flatten()
                 Mtr["acc"].update(p, yb)
                 Mtr["prec"].update(p, yb)
                 Mtr["rec"].update(p, yb)
@@ -321,38 +316,33 @@ def main():
                 run.log({"epoch": ep, "step": step, "train/loss": loss.item()}, step=step)
             step += 1
 
-        # epoch-end train metrics (grid)
         train_metrics = {f"train/{k}": v.compute().item() for k, v in Mtr.items()}
         for v in Mtr.values(): v.reset()
 
-        # ----- validation (UNPATCHIFY → pixel space) -----
+        # ----- VALIDATION (unpatchify → PIXEL loss/metrics + previews) -----
         model.eval()
         val_loss_total = 0.0
         nb = 0
         logged_preview = False
         with torch.no_grad():
             for batch in dl_val:
-                x_in, y_map, mask, (gH, gW) = _prep_batch(batch)
-                x_in = x_in.to(device, non_blocking=True)
+                x_in, y_map, mask, _ = _prep_batch(batch)
+                x_in  = x_in.to(device, non_blocking=True)
                 y_map = y_map.to(device, non_blocking=True)
-                mask = mask.to(device, non_blocking=True)
+                mask  = mask.to(device, non_blocking=True)
 
                 with amp.autocast('cuda', enabled=(device.type == "cuda")):
-                    logits = model(x_in)                               # [B,1,Gy,Gx]
-                    vloss = _masked_bce(logits, y_map, mask, None)     # report unweighted loss on val
+                    logits_grid = model(x_in)
+                    logits_pix  = F.interpolate(logits_grid, scale_factor=P, mode="nearest")
+                    y_pix       = F.interpolate(y_map,      scale_factor=P, mode="nearest")
+                    mask_pix    = F.interpolate(mask.float(), scale_factor=P, mode="nearest").bool()
+                    vloss = _masked_bce(logits_pix, y_pix, mask_pix, None)  # report unweighted val loss
                 val_loss_total += float(vloss)
                 nb += 1
 
-                # ---- PIXEL space for metrics/visuals ----
-                probs_grid = torch.sigmoid(logits.float())             # [B,1,Gy,Gx]
-                # nearest upsample by patch size P → [B,1,H,W]
-                probs_pix  = F.interpolate(probs_grid, scale_factor=P, mode="nearest")
-                target_pix = F.interpolate(y_map,      scale_factor=P, mode="nearest")
-                mask_pix   = F.interpolate(mask.float(), scale_factor=P, mode="nearest").bool()
-
+                probs_pix = torch.sigmoid(logits_pix.float())
                 preds_bin_pix  = (probs_pix > pred_thresh).int()
-                target_bin_pix = (target_pix > target_thresh).int()
-
+                target_bin_pix = (y_pix     > target_thresh).int()
                 m = mask_pix
                 p = preds_bin_pix[m].flatten()
                 yb = target_bin_pix[m].flatten()
@@ -362,9 +352,9 @@ def main():
                 Mva["f1"].update(p, yb)
                 Mva["iou"].update(p, yb)
 
-                # Log VAL previews only (first batch per epoch)
+                # Log VAL previews only (first val batch)
                 if run and (not logged_preview):
-                    log_grid_preview(run, probs_pix, target_pix, key="val/preview", size=preview_size)
+                    log_grid_preview(run, probs_pix, y_pix, key="val/preview", size=preview_size)
                     logged_preview = True
 
         val_metrics = {f"val/{k}": v.compute().item() for k, v in Mva.items()}
