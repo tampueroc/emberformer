@@ -72,3 +72,8 @@ patchify_on_disk:
 stage_c:
   base_channels: 32     # UNet width
 
+split:
+  train: 0.8
+  val: 0.1
+  test: 0.1     # kept for later stages — not used in Stage C
+  seed: 42

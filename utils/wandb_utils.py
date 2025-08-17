@@ -181,3 +181,31 @@ def save_artifact(run, filepath: str, name: str, *, type: str = "model", metadat
     art.add_file(filepath)
     run.log_artifact(art)
 
+def log_grid_preview(
+    run,
+    probs: torch.Tensor,      # [B,1,Gy,Gx], probabilities (after sigmoid)
+    target: torch.Tensor,     # [B,1,Gy,Gx], 0..1 (or {0,1})
+    *,
+    key: str = "preview_grid",
+    max_images: int = 2,
+    size: int = 160,
+):
+    """W&B preview for patch-grid models (Stage C). Upscales to size×size for quick viewing."""
+    if run is None:
+        return
+    wandb = _maybe_import_wandb()
+    if wandb is None:
+        return
+
+    probs = probs.detach().cpu()
+    target = target.detach().cpu()
+
+    B = min(max_images, probs.size(0))
+    images = []
+    for i in range(B):
+        up_p = F.interpolate(probs[i:i+1], size=(size, size), mode="nearest")[0, 0]
+        up_y = F.interpolate(target[i:i+1], size=(size, size), mode="nearest")[0, 0]
+        images.append(wandb.Image((up_p.numpy() * 255).astype("uint8"), caption=f"pred[{i}]"))
+        images.append(wandb.Image((up_y.numpy() * 255).astype("uint8"), caption=f"target[{i}]"))
+    run.log({key: images})
+

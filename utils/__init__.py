@@ -5,6 +5,7 @@ from .wandb_utils import (
     log_batch_shapes,
     log_preview_from_batch,
     save_artifact,
+    log_grid_preview
 )
 __all__ = [
     "init_wandb",
@@ -13,4 +14,5 @@ __all__ = [
     "log_batch_shapes",
     "log_preview_from_batch",
     "save_artifact",
+    "log_grid_preview"
 ]
