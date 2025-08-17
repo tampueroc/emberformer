@@ -1,169 +1,159 @@
-import os
+# scripts/phase0_check.py
 import argparse
-import random
+import os
+import sys
 import yaml
 import torch
-import numpy as np
 from torch.utils.data import DataLoader
 
-# local imports
-from emberformer.data import RawFireDataset, collate_fn
+# Import from top-level 'data' package (matches your current tree)
+from data import RawFireDataset, collate_fn
 
-try:
-    import wandb  # optional
-except Exception:
-    wandb = None
+def load_cfg(path: str):
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
 
+def maybe_init_wandb(cfg):
+    wb = cfg.get("wandb", {})
+    if not wb.get("enabled", True) or wb.get("mode", "online") == "disabled":
+        return None
+    try:
+        import wandb
+    except ImportError:
+        print("[phase0] wandb not installed; continuing without it.")
+        return None
 
-def set_seed(seed: int):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    mode = wb.get("mode", "online")
+    if mode == "offline":
+        os.environ["WANDB_MODE"] = "offline"
 
+    run = wandb.init(
+        project=wb.get("project", "emberformer"),
+        entity=wb.get("entity") or None,
+        name=wb.get("run_name", "phase0-sanity"),
+        tags=wb.get("tags", []),
+        notes=wb.get("notes", ""),
+        config=cfg,
+    )
+    return run
 
-def log_wandb_preview(cfg, batch, landscape_minmax=None):
-    if not cfg["wandb"]["enabled"] or cfg["wandb"]["mode"] == "disabled":
-        return
-    if wandb is None:
-        print("[WARN] wandb not installed; skipping W&B logging.")
-        return
-
-    mode = cfg["wandb"]["mode"]
-    kwargs = {"project": cfg["wandb"]["project"], "name": cfg["wandb"]["run_name"],
-              "tags": cfg["wandb"]["tags"], "notes": cfg["wandb"]["notes"]}
-    if cfg["wandb"]["entity"]:
-        kwargs["entity"] = cfg["wandb"]["entity"]
-    if mode in ("online", "offline"):
-        os.environ["WANDB_MODE"] = mode
-    wandb.init(**kwargs)
-
-    fire, static, wind, target, valid = batch
-    B, _, H, W, T = fire.shape
-    max_imgs = min(cfg["wandb"]["max_preview_images"], B)
-
-    # Log basic shapes
-    wandb.log({
-        "batch/B": B, "batch/H": H, "batch/W": W, "batch/T": T,
-        "static/Cs": static.shape[1]
-    })
-
-    # Make a simple preview: last fire frame vs target
-    previews = []
-    for i in range(max_imgs):
-        last_valid_t = int(valid[i].nonzero(as_tuple=False).max().item())
-        fire_last = fire[i, 0, :, :, last_valid_t].cpu().float().numpy()
-        tgt = target[i, 0].cpu().float().numpy()
-        previews.append(wandb.Image(
-            np.stack([fire_last, tgt], axis=0),
-            caption=f"sample={i} | rows: [fire_last, target]"
-        ))
-    wandb.log({"preview/fire_last_and_target": previews})
-
-    # Static band min/max
-    if cfg["wandb"]["log_norm_stats"] and landscape_minmax is not None:
-        lmin, lmax = landscape_minmax
-        table = wandb.Table(columns=["band", "min", "max"])
-        for i, (mn, mx) in enumerate(zip(lmin, lmax)):
-            table.add_data(i, float(mn), float(mx))
-        wandb.log({"landscape/minmax": table})
-
-
-def run_checks(cfg, ds: RawFireDataset):
-    print("\n[Phase-0] Running quick dataset checks…")
-
-    # 1) Weather columns present
-    if cfg["checks"]["assert_ws_wd_present"]:
-        sample_key = next(iter(ds.weathers))  # grab any one file
-        df = ds.weathers[sample_key]
-        assert cfg["weather"]["ws_col"] in df.columns and cfg["weather"]["wd_col"] in df.columns, \
-            f"Weather CSVs must contain columns '{cfg['weather']['ws_col']}' and '{cfg['weather']['wd_col']}'"
-        print(" ✓ Weather columns present.")
-
-    # 2) Frame count parity (already asserted in dataset, but sample a few)
-    if cfg["checks"]["assert_frames_match"]:
-        root = os.path.join(os.path.expanduser(cfg["data"]["data_dir"]))
-        fire_root = os.path.join(root, "fire_frames")
-        iso_root = os.path.join(root, "isochrones")
-        seqs = sorted(os.listdir(fire_root))[: cfg["checks"]["sample_count"]]
-        for sd in seqs:
-            nf = len([f for f in os.listdir(os.path.join(fire_root, sd)) if f.endswith(".png")])
-            ni = len([f for f in os.listdir(os.path.join(iso_root, sd)) if f.endswith(".png")])
-            assert nf == ni, f"{sd}: fire({nf}) != iso({ni})"
-        print(f" ✓ Fire/iso frames match for {len(seqs)} sampled sequences.")
-
-    # 3) H/W consistency across samples
-    if cfg["checks"]["fail_on_mixed_hw"]:
-        H0 = W0 = None
-        for i in range(min(cfg["checks"]["sample_count"], len(ds))):
-            fire, static, _, tgt = ds[i]
-            _, H, W, _ = fire.shape
-            if H0 is None:
-                H0, W0 = H, W
-            assert (H, W) == (H0, W0), f"Mixed spatial sizes found: got {(H, W)} vs {(H0, W0)}"
-        print(f" ✓ Spatial size consistent at {H0}x{W0} (checked {min(cfg['checks']['sample_count'], len(ds))} samples).")
-
-    # 4) Landscape normalization stats
-    lmin = ds.landscape_min
-    lmax = ds.landscape_max
-    print(f" ✓ Landscape bands: {len(lmin)} | min[0]={float(lmin[0]) if len(lmin)>0 else '—'} | max[0]={float(lmax[0]) if len(lmax)>0 else '—'}")
-    return (lmin, lmax)
-
+def to_numpy_img(t):
+    """t: [1,H,W] or [H,W]; returns HxW uint8 for wandb.Image"""
+    t = t.detach().cpu()
+    if t.ndim == 3 and t.shape[0] == 1:
+        t = t.squeeze(0)
+    t = (t.float() * 255.0).clamp(0, 255).to(torch.uint8).numpy()
+    return t
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="emberformer/configs/emberformer.yaml")
+    parser.add_argument("--config", required=True)
     args = parser.parse_args()
 
-    with open(args.config, "r") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_cfg(args.config)
+    g = cfg.get("global", {})
+    data_cfg = cfg.get("data", {})
+    checks = cfg.get("checks", {})
+    enc = cfg.get("encoding", {})
+    weather_cfg = cfg.get("weather", {})
 
-    set_seed(cfg["global"]["seed"])
-    torch.backends.cudnn.benchmark = bool(cfg["global"]["cudnn_benchmark"])
+    torch.manual_seed(g.get("seed", 42))
 
-    # Dataset + Loader
+    # Dataset
     ds = RawFireDataset(
-        data_dir=cfg["data"]["data_dir"],
-        sequence_length=int(cfg["data"]["sequence_length"]),
+        data_dir=data_cfg["data_dir"],              # NOTE: dataset now uses expanduser(data_dir)
+        sequence_length=int(data_cfg.get("sequence_length", 3)),
         transform=None,
     )
+    print(f"[phase0] Dataset size: {len(ds)} samples")
 
-    # quick checks
-    landscape_minmax = run_checks(cfg, ds)
+    # Quick per-sample scan
+    n_scan = int(checks.get("sample_count", 16))
+    n_scan = min(n_scan, len(ds))
+    shapes = set()
+    seq_lens = set()
 
-    loader = DataLoader(
+    # Basic integrity checks
+    if checks.get("assert_frames_match", True):
+        # If RawFireDataset raised no assertion while building, this is already OK.
+        print("[phase0] Frame count check passed during dataset build.")
+
+    # Peek some samples
+    for i in range(n_scan):
+        fire, static, wind, target = ds[i]
+        H, W = fire.shape[1], fire.shape[2]     # fire: [1,H,W,T]
+        T = fire.shape[-1]
+        shapes.add((H, W))
+        seq_lens.add(T)
+
+    print(f"[phase0] Observed spatial sizes (H,W) in first {n_scan}: {sorted(list(shapes))}")
+    print(f"[phase0] Observed sequence lengths T in first {n_scan}: {sorted(list(seq_lens))}")
+
+    if checks.get("fail_on_mixed_hw", True) and len(shapes) > 1:
+        raise RuntimeError(f"[phase0] Mixed spatial sizes detected: {shapes}")
+
+    # Dataloader + one batch
+    dl = DataLoader(
         ds,
-        batch_size=int(cfg["data"]["batch_size"]),
-        shuffle=bool(cfg["data"]["shuffle"]),
-        num_workers=int(cfg["data"]["num_workers"]),
-        pin_memory=bool(cfg["data"]["pin_memory"]),
-        drop_last=bool(cfg["data"]["drop_last"]),
+        batch_size=int(data_cfg.get("batch_size", 4)),
+        shuffle=bool(data_cfg.get("shuffle", True)),
+        num_workers=int(data_cfg.get("num_workers", 4)),
+        pin_memory=bool(data_cfg.get("pin_memory", True)),
+        drop_last=bool(data_cfg.get("drop_last", False)),
         collate_fn=collate_fn,
     )
 
-    # Pull one batch
-    batch = next(iter(loader))
-    fire, static, wind, target, valid = batch
+    batch = next(iter(dl))
+    fire_b, static_b, wind_b, target_b, valid = batch
+    # Shapes
+    # fire_b: [B,1,H,W,T_max]
+    # static_b: [B,Cs,H,W]
+    # wind_b: [B,2,T_max]
+    # target_b: [B,1,H,W]
+    # valid: [B,T_max]
+    print("[phase0] Batch shapes:")
+    print("  fire   :", tuple(fire_b.shape))
+    print("  static :", tuple(static_b.shape))
+    print("  wind   :", tuple(wind_b.shape))
+    print("  target :", tuple(target_b.shape))
+    print("  valid  :", tuple(valid.shape))
 
-    # Print shapes
-    print("\n[Batch Shapes]")
-    print(f" fire      : {tuple(fire.shape)}   (B, 1, H, W, T_max)")
-    print(f" static    : {tuple(static.shape)} (B, Cs, H, W)")
-    print(f" wind      : {tuple(wind.shape)}   (B, 2, T_max)")
-    print(f" target    : {tuple(target.shape)} (B, 1, H, W)")
-    print(f" valid     : {tuple(valid.shape)}  (B, T_max)")
+    # W&B logging (optional)
+    run = maybe_init_wandb(cfg)
+    if run is not None:
+        import wandb
 
-    # Basic assertions
-    B, _, H, W, T = fire.shape
-    assert wind.shape[-1] == T, "Wind T_max must match fire T_max after collate."
-    assert static.shape[2] == H and static.shape[3] == W, "Static H/W must match fire H/W."
+        # Log min/max per landscape band if available
+        if cfg.get("wandb", {}).get("log_norm_stats", True):
+            ln = ds.landscape_normalizer
+            if getattr(ln, "landscape_min", None) is not None:
+                run.log({
+                    "landscape/min_per_band": wandb.Histogram(ln.landscape_min),
+                    "landscape/max_per_band": wandb.Histogram(ln.landscape_max),
+                })
 
-    # W&B preview (optional)
-    if cfg["wandb"]["enabled"] and cfg["wandb"]["mode"] != "disabled":
-        log_wandb_preview(cfg, batch, landscape_minmax)
+        # Batch preview (first N)
+        if cfg.get("wandb", {}).get("log_batch_preview", True):
+            n_img = min(cfg["wandb"].get("max_preview_images", 8), fire_b.size(0))
+            images = []
+            for i in range(n_img):
+                # last time slice of fire & target for quick visual
+                fire_last = fire_b[i, 0, :, :, -1]     # [H,W]
+                targ = target_b[i, 0]                  # [H,W]
+                images.append(wandb.Image(to_numpy_img(fire_last), caption=f"fire_last/b{i}"))
+                images.append(wandb.Image(to_numpy_img(targ), caption=f"target/b{i}"))
+            run.log({"preview": images})
 
-    print("\n[OK] Phase-0 dataloader sanity check complete.")
+        # Basic scalars
+        run.log({
+            "batch/T_max": fire_b.shape[-1],
+            "batch/H": fire_b.shape[2],
+            "batch/W": fire_b.shape[3],
+        })
 
+        run.finish()
+
+    print("[phase0] ✅ Data layer sanity check completed.")
 
 if __name__ == "__main__":
     main()

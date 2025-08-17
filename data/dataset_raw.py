@@ -18,7 +18,7 @@ class RawFireDataset:
     """
     def __init__(self, data_dir, sequence_length=3, transform=None):
         super().__init__()
-        self.data_dir = os.path.expanduser(f"~/{data_dir}")
+        self.data_dir = os.path.expanduser(data_dir)
         self.sequence_length = sequence_length
         self.transform = transform
 
