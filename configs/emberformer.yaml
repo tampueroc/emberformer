@@ -1,0 +1,78 @@
+# =========================
+# EmberFormer master config
+# Phase 0: data layer + W&B
+# =========================
+
+global:
+  seed: 42
+  cudnn_benchmark: true        # leave true if H/W fixed; set false if H/W varies by sample
+
+data:
+  # Base directory with the folder layout:
+  #   landscape/Input_Geotiff.tif
+  #   landscape/indices.json
+  #   landscape/Weathers/*.csv
+  #   landscape/WeatherHistory.csv
+  #   fire_frames/sequence_xxx/*.png
+  #   isochrones/sequence_xxx/*.png
+  data_dir: "~/data/deep_crown_dataset/organized_spreads"
+
+  # Temporal slicing
+  sequence_length: 3            # history length (T); target is next frame
+
+  # Dataloader
+  batch_size: 4
+  num_workers: 4
+  pin_memory: true
+  drop_last: false
+  shuffle: true
+
+  # Collation (our collate does left-padding in time by default)
+  collate: left_pad_time        # reserved for future; current code uses emberformer.data.collate_fn
+
+  # Optional spatial enforcement (Phase 0 can warn/fail if H/W differ across samples)
+  enforce_spatial_size: null    # e.g. [400, 400] to force pad/resize; null = no enforcement
+  resize_mode: pad              # "pad" or "resize" (used only if enforce_spatial_size set)
+  constant_pad_value: 0
+
+encoding:
+  # PNG channel/value that denotes fire/isochrones = 1
+  fire_channel: 1
+  fire_value: 231
+  isochrone_channel: 1
+  isochrone_value: 231
+
+weather:
+  folder: "landscape/Weathers"
+  history_csv: "landscape/WeatherHistory.csv"
+  ws_col: "WS"
+  wd_col: "WD"
+
+wandb:
+  enabled: true
+  mode: online        # online | offline | disabled (if disabled, we skip init entirely)
+  project: "emberformer"
+  entity: ""          # set if you use a team/account; else leave blank
+  run_name: "phase0-sanity"
+  tags: ["phase0", "data", "sanity"]
+  notes: "Raw dataset pass + batch collation checks"
+  log_artifacts: true
+  log_batch_preview: true         # log a grid from the first batch
+  log_norm_stats: true            # log min/max per landscape band
+  max_preview_images: 8
+
+checks:
+  sample_count: 16                # how many samples to scan for quick stats
+  fail_on_mixed_hw: true          # raise if crops differ in H/W across sequences
+  assert_ws_wd_present: true      # ensure weather CSVs have WS/WD columns
+  assert_frames_match: true       # ensure #fire_frames == #isochrones in each sequence
+
+# Future (not used in Phase 0 but reserved so the file survives):
+patchify_on_disk:
+  enabled: false
+  patch_size: 16
+  stride: 16
+  save_dir: "patch_cache"
+  include_static_tokens: true
+  include_fire_tokens: true
+
