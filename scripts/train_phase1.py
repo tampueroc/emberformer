@@ -1,167 +1,141 @@
-import os
-import yaml
-import math
-import wandb
-import torch
-import numpy as np
-from pathlib import Path
-from argparse import ArgumentParser
+import os, argparse, yaml, inspect, torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.nn.functional import binary_cross_entropy_with_logits
+import torchmetrics
+import wandb
 
 from data import RawFireDataset, collate_fn
 from models import CopyLast, ConvHead2D, Tiny3D
 
-def set_seed(seed):
-    import random
-    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.benchmark = True
+def load_cfg(p):
+    with open(p, "r") as f: return yaml.safe_load(f)
 
-def make_model(kind, static_channels):
-    if kind == "copy_last":
-        return CopyLast()
-    if kind == "conv2d":
-        return ConvHead2D(static_channels=static_channels)
-    if kind == "tiny3d":
-        return Tiny3D()
-    raise ValueError(f"Unknown model kind: {kind}")
-
-@torch.no_grad()
-def compute_metrics(logits, target, thr=0.5):
-    # logits/target: [B,1,H,W]
-    probs = torch.sigmoid(logits)
-    pred = (probs >= thr).float()
-    tgt = target.float()
-    inter = (pred * tgt).sum(dim=(1,2,3))
-    union = (pred + tgt - pred*tgt).sum(dim=(1,2,3))
-    iou = (inter / (union + 1e-6)).mean().item()
-    tp = inter
-    fp = (pred * (1 - tgt)).sum(dim=(1,2,3))
-    fn = ((1 - pred) * tgt).sum(dim=(1,2,3))
-    prec = (tp / (tp + fp + 1e-6)).mean().item()
-    rec  = (tp / (tp + fn + 1e-6)).mean().item()
-    f1 = (2*prec*rec / (prec + rec + 1e-6)) if (prec+rec)>0 else 0.0
-    return dict(iou=iou, precision=prec, recall=rec, f1=float(f1))
-
-def to_wandb_image(logits, target, fire_last):
-    # all [1,H,W]; create 3-panel for quick eyeballing
-    import torchvision.utils as vutils
-    pics = []
-    for a in [torch.sigmoid(logits), target, fire_last]:
-        pics.append(a.clamp(0,1))
-    grid = torch.cat(pics, dim=-1)  # [1,H, 3W]
-    return wandb.Image(grid.cpu().numpy())
-
-def main():
-    ap = ArgumentParser()
-    ap.add_argument("--config", default="configs/emberformer.yaml")
-    ap.add_argument("--model", default="conv2d", choices=["copy_last","conv2d","tiny3d"])
-    ap.add_argument("--epochs", type=int, default=3)
-    ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--weight_decay", type=float, default=0.0)
-    ap.add_argument("--threshold", type=float, default=0.5)
-    ap.add_argument("--save_dir", default="checkpoints")
-    args = ap.parse_args()
-
-    with open(args.config, "r") as f:
-        cfg = yaml.safe_load(f)
-
-    set_seed(cfg["global"]["seed"])
-    data_cfg = cfg["data"]
-    wandb_cfg = cfg["wandb"]
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Dataset / Loader
-    ds = RawFireDataset(
-        data_dir=data_cfg["data_dir"],
-        sequence_length=data_cfg["sequence_length"],
-        transform=None
+def init_wandb(cfg):
+    wb = cfg.get("wandb", {})
+    if not wb.get("enabled", True) or wb.get("mode", "online") == "disabled":
+        return None
+    os.environ["WANDB_MODE"] = wb.get("mode", "online")
+    return wandb.init(
+        project=wb.get("project", "emberformer"),
+        entity=wb.get("entity") or None,
+        name=wb.get("run_name", "phase1"),
+        tags=wb.get("tags", []),
+        notes=wb.get("notes", ""),
+        config=cfg,
     )
+
+def make_loader(cfg):
+    d = cfg["data"]
+    ds = RawFireDataset(d["data_dir"], sequence_length=d.get("sequence_length", 3))
     dl = DataLoader(
         ds,
-        batch_size=data_cfg["batch_size"],
-        shuffle=data_cfg["shuffle"],
-        num_workers=data_cfg["num_workers"],
-        pin_memory=data_cfg["pin_memory"],
-        drop_last=data_cfg["drop_last"],
-        collate_fn=collate_fn
+        batch_size=d.get("batch_size", 4),
+        num_workers=d.get("num_workers", 4),
+        pin_memory=d.get("pin_memory", True),
+        drop_last=d.get("drop_last", False),
+        shuffle=d.get("shuffle", True),
+        collate_fn=collate_fn,
     )
+    return ds, dl
 
-    # Model
-    static_channels = ds.landscape_data.shape[0]
-    model = make_model(args.model, static_channels).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+def build_model(name, static_channels):
+    n = name.lower()
+    if n in ["copy_last", "copy", "identity"]:
+        return CopyLast()
+    if n in ["conv_head2d", "conv2d", "head2d"]:
+        return ConvHead2D(static_channels=static_channels, hidden=32)
+    if n in ["tiny3d", "3d"]:
+        return Tiny3D(in_ch=1, hidden=16)
+    raise ValueError(f"unknown model {name}")
 
-    # W&B
-    run = None
-    if wandb_cfg.get("enabled", True) and wandb_cfg.get("mode","online") != "disabled":
-        run = wandb.init(
-            project=wandb_cfg["project"],
-            entity=wandb_cfg.get("entity") or None,
-            name=wandb_cfg.get("run_name", f"phase1-{args.model}"),
-            tags=wandb_cfg.get("tags", []) + ["phase1", args.model],
-            notes=wandb_cfg.get("notes","")
-        )
-        wandb.config.update({
-            "model": args.model,
-            "epochs": args.epochs,
-            "lr": args.lr,
-            "weight_decay": args.weight_decay,
-            "threshold": args.threshold,
-            "sequence_length": data_cfg["sequence_length"],
-            "batch_size": data_cfg["batch_size"]
-        }, allow_val_change=True)
+def call_model(model, fire, static, wind, valid_tokens):
+    # Try (fire, static, wind, valid_tokens) then (fire, static, wind)
+    sig = inspect.signature(model.forward)
+    if len(sig.parameters) >= 4:
+        try: return model(fire, static, wind, valid_tokens)
+        except TypeError: pass
+    return model(fire, static, wind)
 
-    # Train (single split; just to sanity-check loss goes down)
-    model.train()
-    for epoch in range(1, args.epochs+1):
-        total_loss = 0.0
-        n = 0
-        for fire, static, wind, target, valid in dl:
-            fire   = fire.to(device)     # [B,1,H,W,T]
-            static = static.to(device)   # [B,Cs,H,W]
-            wind   = wind.to(device)     # [B,2,T]
-            target = target.to(device)   # [B,1,H,W]
+def preview(run, batch, logits, max_images=4):
+    if run is None: return
+    fire, static, wind, target, valid = batch
+    probs = torch.sigmoid(logits).detach().cpu()
+    preds = (probs > 0.5).float()
+    last = fire[..., -1].detach().cpu()
+    tgt  = target.detach().cpu()
+    imgs = []
+    n = min(max_images, preds.shape[0])
+    for i in range(n):
+        imgs.append(wandb.Image(preds[i,0], caption=f"pred[{i}]"))
+        imgs.append(wandb.Image(tgt[i,0],   caption=f"target[{i}]"))
+        imgs.append(wandb.Image(last[i,0],  caption=f"last_fire[{i}]"))
+    run.log({"preview": imgs})
 
-            logits = model(fire, static, wind)      # [B,1,H,W]
-            loss = binary_cross_entropy_with_logits(logits, target)
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default="configs/emberformer.yaml")
+    ap.add_argument("--model", default=None, help="copy_last | conv_head2d | tiny3d")
+    ap.add_argument("--epochs", type=int, default=None)
+    args = ap.parse_args()
 
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            opt.step()
+    cfg = load_cfg(args.config)
+    torch.manual_seed(cfg.get("global", {}).get("seed", 42))
+    torch.backends.cudnn.benchmark = cfg.get("global", {}).get("cudnn_benchmark", True)
 
-            total_loss += loss.item() * fire.size(0)
-            n += fire.size(0)
+    run = init_wandb(cfg)
+    ds, dl = make_loader(cfg)
+    Cs = ds.landscape_data.shape[0]
 
-        avg_loss = total_loss / max(1, n)
+    tcfg = cfg.get("train", {})
+    model_name = args.model or tcfg.get("model", "conv_head2d")
+    epochs = args.epochs or tcfg.get("epochs", 1)
+    lr = tcfg.get("lr", 1e-3); wd = tcfg.get("weight_decay", 0.0)
+    log_every = tcfg.get("log_images_every", 200)
 
-        # Quick eval on a small batch
-        model.eval()
-        with torch.no_grad():
-            fire, static, wind, target, valid = next(iter(dl))
-            fire, static, wind, target = fire.to(device), static.to(device), wind.to(device), target.to(device)
-            logits = model(fire, static, wind)
-            metrics = compute_metrics(logits, target, thr=args.threshold)
-            preview = to_wandb_image(logits[0,0], target[0,0], fire[0,0,...,-1])
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = build_model(model_name, Cs).to(device)
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = None if isinstance(model, CopyLast) else torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
+
+    acc = torchmetrics.classification.BinaryAccuracy().to(device)
+    iou = torchmetrics.classification.BinaryJaccardIndex().to(device)
+
+    step = 0
+    for epoch in range(epochs):
         model.train()
+        for batch in dl:
+            fire, static, wind, target, valid = [x.to(device) for x in batch]
+            logits = call_model(model, fire, static, wind, valid)     # tolerant call
+            loss = criterion(logits, target)
 
-        log_dict = {"epoch": epoch, "loss/train": avg_loss, **{f"metrics/{k}": v for k,v in metrics.items()}}
-        if run:
-            wandb.log(log_dict)
-            wandb.log({"preview": preview})
+            if optimizer:
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
 
-        print(f"[epoch {epoch}] loss={avg_loss:.4f} | iou={metrics['iou']:.4f} f1={metrics['f1']:.4f}")
+            with torch.no_grad():
+                preds = (torch.sigmoid(logits) > 0.5).int()
+                acc.update(preds, target.int()); iou.update(preds, target.int())
 
-    # Save
-    Path(args.save_dir).mkdir(parents=True, exist_ok=True)
-    ckpt = Path(args.save_dir) / f"phase1_{args.model}.pt"
-    torch.save({"model": model.state_dict(), "cfg": cfg}, ckpt)
-    if run:
-        wandb.save(str(ckpt))
-        run.finish()
+            if run:
+                wandb.log({
+                    "loss/train": loss.item(),
+                    "lr": optimizer.param_groups[0]["lr"] if optimizer else 0.0,
+                    "epoch": epoch,
+                    "step": step,
+                }, step=step)
+
+            if run and (step == 0 or (log_every and step % log_every == 0)):
+                preview(run, batch, logits, max_images=cfg["wandb"].get("max_preview_images", 8))
+
+            step += 1
+
+        epoch_acc, epoch_iou = acc.compute().item(), iou.compute().item()
+        acc.reset(); iou.reset()
+        if run: wandb.log({"metrics/acc": epoch_acc, "metrics/iou": epoch_iou, "epoch": epoch}, step=step)
+        print(f"[epoch {epoch}] loss ~ {loss.item():.4f} | acc {epoch_acc:.4f} | IoU {epoch_iou:.4f}")
+
+    if run: run.finish()
 
 if __name__ == "__main__":
     main()

@@ -61,6 +61,13 @@ wandb:
   log_norm_stats: true
   max_preview_images: 8
 
+train:
+  model: copy_last
+  epochs: 1
+  lr: 1e-3
+  weight_decay: 0.0
+  log_images_every: 200
+
 checks:
   sample_count: 16                # how many samples to scan for quick stats
   fail_on_mixed_hw: true          # raise if crops differ in H/W across sequences
