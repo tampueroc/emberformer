@@ -6,6 +6,9 @@ import torch
 import torch.nn.functional as F
 from torchvision.io import read_image
 from tqdm import tqdm  # progress bar (guarded by config)
+import re
+import hashlib
+
 
 from data.dataset_raw import RawFireDataset
 import yaml
@@ -198,6 +201,26 @@ def _maybe_wandb_start(cfg):
         pass
     return run, wandb
 
+def _slug(s: str) -> str:
+    base = os.path.basename(os.path.normpath(os.path.expanduser(s)))
+    return re.sub(r"[^a-zA-Z0-9._-]+", "-", base).strip("-").lower() or "dataset"
+
+def _cfg_sig_for_cache(cfg: dict) -> tuple[str, dict]:
+    pc = cfg.get("patchify_on_disk", {})
+    d  = cfg.get("data", {})
+    enc = cfg.get("encoding", {})
+    key = {
+        "dataset": _slug(d.get("data_dir","")),
+        "patch_size": int(pc.get("patch_size", 16)),
+        "stride": int(pc.get("stride", 16)),
+        "pad_mode": pc.get("pad_mode", "strict"),
+        "fire_value": int(enc.get("fire_value", 231)),
+    }
+    js = json.dumps(key, sort_keys=True).encode()
+    sig = hashlib.sha1(js).hexdigest()[:8]
+    return sig, key
+
+
 def _maybe_log_artifact(run, cfg, cache_root):
     wb = cfg.get("wandb", {})
     pc = cfg.get("patchify_on_disk", {})
@@ -207,17 +230,19 @@ def _maybe_log_artifact(run, cfg, cache_root):
         import wandb
     except Exception:
         return
+
+    sig, key = _cfg_sig_for_cache(cfg)
+    name = f"patch-cache-{key['dataset']}-p{key['patch_size']}-s{key['stride']}-{key['pad_mode']}"
     art = wandb.Artifact(
-        name=f"patch-cache-{time.strftime('%m%d-%H%M')}",
+        name=name,
         type="patch_cache",
-        metadata={
-            "patch_size": pc["patch_size"],
-            "stride": pc.get("stride", 16),
-            "pad_mode": pc.get("pad_mode", "strict"),
-        },
+        metadata=key | {"built_from_run": run.id, "cache_dir": os.path.abspath(cache_root)},
     )
     art.add_dir(cache_root)
-    run.log_artifact(art)
+
+    aliases = ["latest", f"cfg-{sig}", f"p{key['patch_size']}", key["pad_mode"]]
+    run.log_artifact(art, aliases=aliases)
+
 
 
 # -----------
@@ -283,7 +308,7 @@ def main():
 
             dt = time.time() - start
             seq_T = int(stats["T"])
-            seq_N = int(stats.get("N", stats["Gy"] * stats["Gx"]))
+            seq_N = int(stats.get("N", stats.get("Gy", 0) * stats.get("Gx", 0)))
             totals["sequences"] += 1
             totals["frames"] += seq_T
             totals["patches"] += seq_N

@@ -27,7 +27,7 @@ def main():
     cfg = load_cfg(args.config)
     d = cfg["data"]
     pcfg = cfg.get("patchify_on_disk", {})
-    cache_root = os.path.join(os.path.expanduser(d["data_dir"]), pcfg.get("save_dir","patch_cache"))
+    cache_root = os.path.expanduser(pcfg.get("cache_dir", "~/data/emberformer/patch_cache"))
 
     raw_ds = RawFireDataset(d["data_dir"], sequence_length=d.get("sequence_length",3))
     tok_ds = TokenFireDataset(cache_root, raw_root=d["data_dir"], sequence_length=d.get("sequence_length",3))
