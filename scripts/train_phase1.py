@@ -9,9 +9,8 @@ from argparse import ArgumentParser
 from torch.utils.data import DataLoader
 from torch.nn.functional import binary_cross_entropy_with_logits
 
-from emberformer.data.dataset_raw import RawFireDataset
-from emberformer.data.collate import collate_fn
-from emberformer.models import CopyLast, ConvHead2D, Tiny3D
+from data import RawFireDataset, collate_fn
+from models import CopyLast, ConvHead2D, Tiny3D
 
 def set_seed(seed):
     import random
