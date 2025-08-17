@@ -1,4 +1,3 @@
-# scripts/train_stage_c_raw.py
 import os, time, argparse, yaml, pathlib
 import torch
 import torch.nn as nn
@@ -6,6 +5,7 @@ import torch.nn.functional as F
 from torch import amp
 from torch.utils.data import DataLoader
 import torchmetrics
+from tqdm import tqdm
 
 from data import RawFireDataset, collate_fn
 from models import UNetS
@@ -88,7 +88,11 @@ def bce_with_logits_weighted(logits, target, w_pos: float = 1.0, w_neg: float = 
     which generally increases precision (at the cost of recall).
     """
     loss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
-    weights = torch.where(target > 0.5, torch.as_tensor(w_pos, device=logits.device), torch.as_tensor(w_neg, device=logits.device))
+    weights = torch.where(
+        target > 0.5,
+        torch.as_tensor(w_pos, device=logits.device, dtype=logits.dtype),
+        torch.as_tensor(w_neg, device=logits.device, dtype=logits.dtype),
+    )
     num = (loss * weights).sum()
     den = weights.sum().clamp_min(eps)
     return num / den
@@ -98,7 +102,7 @@ def bce_with_logits_weighted(logits, target, w_pos: float = 1.0, w_neg: float = 
 # ----------------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="configs/emberformer.yaml")  # raw config works well here
+    ap.add_argument("--config", default="configs/stage_c_raw.yaml")
     ap.add_argument("--gpu", type=int, default=None)
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--batch_size", type=int, default=None)
@@ -176,9 +180,15 @@ def main():
 
     step = 0
     preview_logged_this_epoch = False
+    log_every = int(cfg.get("train", {}).get("log_images_every", 200))
+
     for ep in range(epochs):
+        # ----------------
+        # Train epoch
+        # ----------------
         model.train()
-        for batch in dl:
+        train_bar = tqdm(dl, desc=f"train e{ep}", unit="batch", leave=False, dynamic_ncols=True)
+        for batch in train_bar:
             fire, static, wind, target, valid = [x.to(device, non_blocking=True) for x in batch]
             x_in = _make_x_in(fire, static, wind, valid, k_fire)   # [B,in_ch,H,W]
 
@@ -202,18 +212,39 @@ def main():
                 Mtr["f1"].update(p, y)
                 Mtr["iou"].update(p, y)
 
+            # tqdm live metrics (running)
+            try:
+                train_bar.set_postfix(
+                    loss=f"{loss.item():.4f}",
+                    prec=f"{Mtr['prec'].compute().item():.3f}",
+                    iou=f"{Mtr['iou'].compute().item():.3f}",
+                )
+            except Exception:
+                pass
+
+            # WandB per-step logging
             if run:
-                run.log({"epoch": ep, "step": step, "train/loss": loss.item()}, step=step)
+                payload = {"epoch": ep, "step": step, "train/loss": loss.item()}
+                if step % max(1, log_every) == 0:
+                    # log running metrics occasionally
+                    payload.update({
+                        "train/precision_running": Mtr["prec"].compute().item(),
+                        "train/iou_running": Mtr["iou"].compute().item(),
+                    })
+                run.log(payload, step=step)
             step += 1
 
         train_metrics = {f"train/{k}": v.compute().item() for k, v in Mtr.items()}
         for v in Mtr.values(): v.reset()
 
-        # ----- Validation on the same loader (quick sanity) -----
+        # ----------------
+        # "Validation" pass (quick sanity on same loader)
+        # ----------------
         model.eval()
         val_loss_sum, val_batches = 0.0, 0
+        val_bar = tqdm(dl, desc=f"val   e{ep}", unit="batch", leave=False, dynamic_ncols=True)
         with torch.no_grad():
-            for batch in dl:
+            for batch in val_bar:
                 fire, static, wind, target, valid = [x.to(device, non_blocking=True) for x in batch]
                 x_in = _make_x_in(fire, static, wind, valid, k_fire)
                 with amp.autocast('cuda', enabled=(device.type == "cuda")):
@@ -223,13 +254,22 @@ def main():
 
                 probs = torch.sigmoid(logits.float())
                 preds = (probs > pred_thresh).int()
-                p = preds.view(-1)
-                y = target.int().view(-1)
+                p = preds.view(-1); y = target.int().view(-1)
                 Mva["acc"].update(p, y)
                 Mva["prec"].update(p, y)
                 Mva["rec"].update(p, y)
                 Mva["f1"].update(p, y)
                 Mva["iou"].update(p, y)
+
+                # tqdm live metrics (running)
+                try:
+                    val_bar.set_postfix(
+                        vloss=f"{float(vloss):.4f}",
+                        prec=f"{Mva['prec'].compute().item():.3f}",
+                        iou=f"{Mva['iou'].compute().item():.3f}",
+                    )
+                except Exception:
+                    pass
 
                 # Log one preview per epoch
                 if run and not preview_logged_this_epoch:
@@ -239,7 +279,7 @@ def main():
                         logits=logits.detach().cpu(),
                         key="val/preview_raw",
                         max_images=cfg["wandb"].get("max_preview_images", 2),
-                        size=int(cfg["wandb"].get("preview_size", 160)),
+                        size=int(cfg["wandb"].get("preview_size", 400)),
                     )
                     preview_logged_this_epoch = True
 
@@ -252,7 +292,7 @@ def main():
 
         print(
             f"[Stage C RAW][epoch {ep}] "
-            f"train_loss={loss.item():.4f} "
+            f"train_loss={train_metrics.get('train/acc', 0.0):.4f} "
             f"val_loss={val_loss:.4f} "
             f"val_acc={val_metrics['val/acc']:.4f} "
             f"val_prec={val_metrics['val/prec']:.4f} "
