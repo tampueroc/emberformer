@@ -48,6 +48,15 @@ def _prep_batch(batch):
     metas  = X["meta"]
 
     B, N, Cs = static.shape
+    if torch.is_tensor(metas):
+        if metas.ndim == 2:               # [B,2]
+            gH, gW = map(int, metas[0].tolist())
+            # (optional) sanity: assert all equal
+            # assert torch.all(metas == metas[0]), "Mixed grid sizes in batch"
+        else:                              # [2] (e.g., batch size 1 without collation)
+            gH, gW = map(int, metas.tolist())
+    else:
+        raise TypeError(f"Unexpected meta type: {type(metas)}")
     gH, gW = metas[0]
     assert gH * gW == N, f"N={N} != Gy*Gx={gH*gW}"
 

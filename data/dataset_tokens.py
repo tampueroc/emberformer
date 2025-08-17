@@ -72,13 +72,14 @@ class TokenFireDataset(torch.utils.data.Dataset):
 
         gH = meta.get("Gy") or meta.get("grid_h")
         gW = meta.get("Gx") or meta.get("grid_w")
+        grid_hw = torch.tensor([gH, gW], dtype=torch.int32)
 
         X = {
             "static":    torch.from_numpy(static_np).float(),   # [N,Cs]
             "fire_last": torch.from_numpy(fire_np).float(),     # [N]
             "wind_last": torch.from_numpy(wind_np).float(),     # [2]
             "valid":     torch.from_numpy(valid_np).bool(),     # [N]a
-            "meta":      (int(gH), int(gW)),
+            "meta":      grid_hw,
         }
         y = y_patch.float()                                                  # [N]
         return X, y
