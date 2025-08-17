@@ -71,6 +71,10 @@ patchify_on_disk:
 # Optional Stage-C-specific knobs (read by the trainer below)
 stage_c:
   base_channels: 32     # UNet width
+  metrics:
+    pred_thresh: 0.5     # threshold for model probabilities
+    target_thresh: 0.05  # consider a patch positive if >5% of pixels are on fire
+    pos_weight: "auto"   # "auto" balances by batch prevalence (or set a float like 10.0)
 
 split:
   train: 0.8

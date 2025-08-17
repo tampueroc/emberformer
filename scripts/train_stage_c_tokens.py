@@ -1,6 +1,5 @@
 import os, time, argparse, yaml, pathlib, json, random
 from collections import defaultdict
-from torch.cuda.amp import autocast, GradScaler
 import torch
 import torch.nn as nn
 from torch import amp
@@ -12,9 +11,11 @@ from data import TokenFireDataset
 from models import UNetS
 from utils import init_wandb, define_common_metrics, save_artifact, log_grid_preview
 
+
 def load_cfg(p):
     with open(p, "r") as f:
         return yaml.safe_load(f)
+
 
 def _pick_device(gpu_arg: int | None):
     if torch.cuda.is_available():
@@ -26,6 +27,7 @@ def _pick_device(gpu_arg: int | None):
         torch.cuda.set_device(gpu_arg)
         return torch.device(f"cuda:{gpu_arg}")
     return torch.device("cpu")
+
 
 def _coerce_float(val, name):
     if isinstance(val, (int, float)):
@@ -39,6 +41,34 @@ def _coerce_float(val, name):
         return None
     raise ValueError(f"Config field '{name}' has unsupported type: {type(val)}")
 
+
+def _resolve_grid_from_meta(metas):
+    """
+    Handle various shapes default_collate may produce for the (gH, gW) meta:
+      - torch.Tensor [B,2]
+      - torch.Tensor [2]
+      - tuple(tensor([B]), tensor([B]))
+      - list/tuple of (gH, gW) pairs
+    Returns (gH, gW) as ints for the first item in the batch (all should match).
+    """
+    if torch.is_tensor(metas):
+        if metas.ndim == 2 and metas.shape[1] == 2:
+            return int(metas[0, 0].item()), int(metas[0, 1].item())
+        if metas.ndim == 1 and metas.numel() == 2:
+            return int(metas[0].item()), int(metas[1].item())
+        raise TypeError(f"Unexpected tensor meta shape: {tuple(metas.shape)}")
+
+    if isinstance(metas, (tuple, list)):
+        # case: tuple(tensor([B]), tensor([B]))
+        if len(metas) == 2 and all(torch.is_tensor(m) and m.ndim == 1 for m in metas):
+            return int(metas[0][0].item()), int(metas[1][0].item())
+        # case: list/tuple of pairs
+        first = metas[0]
+        return int(first[0]), int(first[1])
+
+    raise TypeError(f"Unexpected meta type: {type(metas)}")
+
+
 def _prep_batch(batch):
     X, y = batch
     static = X["static"]      # [B,N,Cs]
@@ -48,16 +78,7 @@ def _prep_batch(batch):
     metas  = X["meta"]
 
     B, N, Cs = static.shape
-    if torch.is_tensor(metas):
-        if metas.ndim == 2:               # [B,2]
-            gH, gW = map(int, metas[0].tolist())
-            # (optional) sanity: assert all equal
-            # assert torch.all(metas == metas[0]), "Mixed grid sizes in batch"
-        else:                              # [2] (e.g., batch size 1 without collation)
-            gH, gW = map(int, metas.tolist())
-    else:
-        raise TypeError(f"Unexpected meta type: {type(metas)}")
-    gH, gW = metas[0]
+    gH, gW = _resolve_grid_from_meta(metas)
     assert gH * gW == N, f"N={N} != Gy*Gx={gH*gW}"
 
     static_grid = static.permute(0, 2, 1).contiguous().view(B, Cs, gH, gW)
@@ -69,16 +90,21 @@ def _prep_batch(batch):
     m_map = valid.view(B, 1, gH, gW)
     return x_in, y_map, m_map, (gH, gW)
 
-def _masked_bce(logits, y, mask):
-    loss_map = F.binary_cross_entropy_with_logits(logits, y, reduction="none")
+
+def _masked_bce(logits, y, mask, pos_weight=None):
+    loss_map = F.binary_cross_entropy_with_logits(
+        logits, y, reduction="none", pos_weight=pos_weight
+    )
     denom = mask.float().sum().clamp_min(1.0)
     return (loss_map * mask.float()).sum() / denom
+
 
 # ---------- split helpers (persisted) ----------
 def _split_file_path(cache_root: str, seed: int) -> str:
     split_dir = os.path.join(cache_root, "_splits")
     os.makedirs(split_dir, exist_ok=True)
     return os.path.join(split_dir, f"stageC-seq-split-seed{seed}.json")
+
 
 def _make_or_load_sequence_split(ds, cache_root: str, train_frac=0.8, val_frac=0.1, test_frac=0.1, seed=42):
     path = _split_file_path(cache_root, seed)
@@ -107,8 +133,10 @@ def _make_or_load_sequence_split(ds, cache_root: str, train_frac=0.8, val_frac=0
         json.dump(split, f, indent=2)
     return split, path
 
+
 def _subset_indices_by_sequence(ds, seq_list):
-    seq_to_idxs = defaultdict(list)
+    from collections import defaultdict as _dd
+    seq_to_idxs = _dd(list)
     for idx, (sd, _t) in enumerate(ds.samples):
         seq_to_idxs[sd].append(idx)
     out = []
@@ -117,12 +145,13 @@ def _subset_indices_by_sequence(ds, seq_list):
     return sorted(out)
 # -----------------------------------------------
 
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/stage_c.yaml")
     ap.add_argument("--base", type=int, default=None)
     ap.add_argument("--gpu", type=int, default=None)
-    ap.add_argument("--epochs", type=int, default=1)
+    ap.add_argument("--epochs", type=int, default=None)  # prefer config unless overridden
     ap.add_argument("--batch_size", type=int, default=None)
     ap.add_argument("--lr", type=float, default=None)
     ap.add_argument("--cache_dir", type=str, default=None)
@@ -139,8 +168,12 @@ def main():
     cache_root = os.path.expanduser(args.cache_dir or pcfg["cache_dir"])
     raw_root   = os.path.expanduser(d["data_dir"])
 
-    ds = TokenFireDataset(cache_root, raw_root=raw_root, sequence_length=d.get("sequence_length", 3),
-                          fire_value=cfg.get("encoding",{}).get("fire_value",231))
+    ds = TokenFireDataset(
+        cache_root,
+        raw_root=raw_root,
+        sequence_length=d.get("sequence_length", 3),
+        fire_value=cfg.get("encoding", {}).get("fire_value", 231),
+    )
 
     # Peek one sample for channel count
     X0, _ = ds[0]
@@ -152,6 +185,12 @@ def main():
     if run:
         define_common_metrics()
 
+    # ---- metrics/imbalance knobs ----
+    mcfg = cfg.get("stage_c", {}).get("metrics", {})
+    pred_thresh   = float(mcfg.get("pred_thresh", 0.5))
+    target_thresh = float(mcfg.get("target_thresh", 0.05))
+    posw_cfg      = mcfg.get("pos_weight", "auto")
+
     # deterministic split
     split_cfg = cfg.get("split", {})
     train_frac = float(split_cfg.get("train", 0.8))
@@ -159,7 +198,9 @@ def main():
     test_frac  = float(split_cfg.get("test",  0.1))
     seed_split = int(split_cfg.get("seed", cfg.get("global", {}).get("seed", 42)))
 
-    split, split_path = _make_or_load_sequence_split(ds, cache_root, train_frac, val_frac, test_frac, seed_split)
+    split, split_path = _make_or_load_sequence_split(
+        ds, cache_root, train_frac, val_frac, test_frac, seed_split
+    )
     train_idxs = _subset_indices_by_sequence(ds, split["train"])
     val_idxs   = _subset_indices_by_sequence(ds, split["val"])
     test_idxs  = _subset_indices_by_sequence(ds, split["test"])  # saved for later
@@ -168,14 +209,22 @@ def main():
     val_set   = torch.utils.data.Subset(ds, val_idxs)
 
     bs = args.batch_size or d.get("batch_size", 32)
-    dl_train = DataLoader(train_set, batch_size=bs, shuffle=True,
-                          num_workers=d.get("num_workers", 8),
-                          pin_memory=d.get("pin_memory", True),
-                          drop_last=d.get("drop_last", False))
-    dl_val = DataLoader(val_set, batch_size=bs, shuffle=False,
-                        num_workers=d.get("num_workers", 8),
-                        pin_memory=d.get("pin_memory", True),
-                        drop_last=False)
+    dl_train = DataLoader(
+        train_set,
+        batch_size=bs,
+        shuffle=True,
+        num_workers=d.get("num_workers", 8),
+        pin_memory=d.get("pin_memory", True),
+        drop_last=d.get("drop_last", False),
+    )
+    dl_val = DataLoader(
+        val_set,
+        batch_size=bs,
+        shuffle=False,
+        num_workers=d.get("num_workers", 8),
+        pin_memory=d.get("pin_memory", True),
+        drop_last=False,
+    )
 
     if run:
         gh0, gw0 = X0["meta"]
@@ -193,6 +242,9 @@ def main():
             "train_samples":    len(train_set),
             "val_samples":      len(val_set),
             "test_samples":     len(test_idxs),
+            "metrics/pred_thresh": pred_thresh,
+            "metrics/target_thresh": target_thresh,
+            "metrics/pos_weight_cfg": posw_cfg,
         })
 
     # Model/optim
@@ -216,8 +268,7 @@ def main():
     Mva = _make_metrics()
 
     step = 0
-    epochs = args.epochs or cfg["train"].get("epochs", 5)
-    log_imgs_every = int(cfg["train"].get("log_images_every", 200))
+    epochs = args.epochs if args.epochs is not None else cfg["train"].get("epochs", 5)
     preview_size = int(cfg["wandb"].get("preview_size", 160))
 
     for ep in range(epochs):
@@ -229,20 +280,33 @@ def main():
             y_map = y_map.to(device, non_blocking=True)
             mask = mask.to(device, non_blocking=True)
 
+            # compute batch prevalence to balance positives if requested
+            with torch.no_grad():
+                m = mask.bool()
+                pos_frac = y_map[m].mean().item() if m.any() else 0.0
+
+            if posw_cfg == "auto" and pos_frac > 0:
+                pw = (1.0 - pos_frac) / max(pos_frac, 1e-6)
+                pw = min(pw, 100.0)  # clamp to avoid extreme gradients
+                pos_weight = torch.tensor(pw, device=device, dtype=torch.float32)
+            elif isinstance(posw_cfg, (int, float)):
+                pos_weight = torch.tensor(float(posw_cfg), device=device, dtype=torch.float32)
+            else:
+                pos_weight = None
+
             opt.zero_grad(set_to_none=True)
             with amp.autocast('cuda', enabled=(device.type == "cuda")):
                 logits = model(x_in)
-                loss = _masked_bce(logits, y_map, mask)
+                loss = _masked_bce(logits, y_map, mask, pos_weight=pos_weight)
 
             scaler.scale(loss).backward()
-            # scaler.unscale_(opt); torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(opt)
             scaler.update()
 
             with torch.no_grad():
                 probs = torch.sigmoid(logits.float())
-                preds_bin = (probs > 0.5).int()
-                target_bin = (y_map > 0.5).int()
+                preds_bin  = (probs  > pred_thresh).int()
+                target_bin = (y_map  > target_thresh).int()
                 m = mask.bool()
                 p = preds_bin[m].flatten()
                 yb = target_bin[m].flatten()
@@ -253,15 +317,20 @@ def main():
                 Mtr["iou"].update(p, yb)
 
             if run:
-                run.log({"epoch": ep, "step": step, "train/loss": loss.item()}, step=step)
-                if step % max(1, log_imgs_every) == 0:
-                    log_grid_preview(run, probs, y_map, key="train/preview", size=preview_size)
+                run.log({
+                    "epoch": ep,
+                    "step": step,
+                    "train/loss": loss.item(),
+                    "train/pos_frac": pos_frac,
+                    "train/pos_weight": (pos_weight.item() if isinstance(pos_weight, torch.Tensor) else 0.0),
+                }, step=step)
 
             step += 1
 
         # epoch-end train metrics
         train_metrics = {f"train/{k}": v.compute().item() for k, v in Mtr.items()}
-        for v in Mtr.values(): v.reset()
+        for v in Mtr.values():
+            v.reset()
 
         # ----- validation -----
         model.eval()
@@ -280,8 +349,8 @@ def main():
                 nb += 1
 
                 probs = torch.sigmoid(logits.float())
-                preds_bin = (probs > 0.5).int()
-                target_bin = (y_map > 0.5).int()
+                preds_bin  = (probs  > pred_thresh).int()
+                target_bin = (y_map  > target_thresh).int()
                 m = mask.bool()
                 p = preds_bin[m].flatten()
                 yb = target_bin[m].flatten()
@@ -291,8 +360,13 @@ def main():
                 Mva["f1"].update(p, yb)
                 Mva["iou"].update(p, yb)
 
+                # Log validation previews only (first val batch per epoch)
+                if run and nb == 1:
+                    log_grid_preview(run, probs, y_map, key="val/preview", size=preview_size)
+
         val_metrics = {f"val/{k}": v.compute().item() for k, v in Mva.items()}
-        for v in Mva.values(): v.reset()
+        for v in Mva.values():
+            v.reset()
         val_loss = val_loss_total / max(1, nb)
 
         if run:
@@ -311,14 +385,20 @@ def main():
 
     # optional artifact save
     if run and cfg["wandb"].get("log_artifacts", True):
-        ckpt_dir = "checkpoints"; os.makedirs(ckpt_dir, exist_ok=True)
+        ckpt_dir = "checkpoints"
+        os.makedirs(ckpt_dir, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         path = os.path.join(ckpt_dir, f"stageC-unets-{stamp}.pt")
         torch.save(model.state_dict(), path)
-        save_artifact(run, path, name="stageC-unets-weights", type="model",
-                      metadata={"stage":"C","model":"UNetS"})
-    if run: run.finish()
+        save_artifact(
+            run,
+            path,
+            name="stageC-unets-weights",
+            type="model",
+            metadata={"stage": "C", "model": "UNetS"},
+        )
+    if run:
+        run.finish()
 
 if __name__ == "__main__":
     main()
-
