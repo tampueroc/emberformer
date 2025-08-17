@@ -40,7 +40,7 @@ wandb:
   # previews are light (25×25 → upscaled)
   log_batch_preview: false         # we preview inside the Stage C trainer already
   max_preview_images: 2
-  preview_size: 160
+  preview_size: 400
 
   watch: false
   log_artifacts: true              # save checkpoint if you want
