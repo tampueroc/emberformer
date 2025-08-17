@@ -67,7 +67,7 @@ class TokenFireDataset(torch.utils.data.Dataset):
 
         static_np = np.asarray(static).copy()
         fire_np   = np.asarray(fire_last).copy()
-        wind_np   = np.asarray(wind[t_last]).copy()a
+        wind_np   = np.asarray(wind[t_last]).copy()
         valid_np  = np.asarray(valid).copy()
 
         gH = meta.get("Gy") or meta.get("grid_h")
