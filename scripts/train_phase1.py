@@ -60,15 +60,17 @@ def preview(run, batch, logits, max_images=4):
     if run is None: return
     fire, static, wind, target, valid = batch
     probs = torch.sigmoid(logits).detach().cpu()
-    preds = (probs > 0.5).float()
-    last = fire[..., -1].detach().cpu()
-    tgt  = target.detach().cpu()
+    preds = (probs > 0.5).float()          # [B,1,H,W]
+    last  = fire[..., -1].detach().cpu()   # [B,1,H,W]
+    tgt   = target.detach().cpu()          # [B,1,H,W]
+
     imgs = []
     n = min(max_images, preds.shape[0])
     for i in range(n):
-        imgs.append(wandb.Image(preds[i,0], caption=f"pred[{i}]"))
-        imgs.append(wandb.Image(tgt[i,0],   caption=f"target[{i}]"))
-        imgs.append(wandb.Image(last[i,0],  caption=f"last_fire[{i}]"))
+        # NOTE: keep the channel dim -> pass [1,H,W], not [H,W]
+        imgs.append(wandb.Image(preds[i], caption=f"pred[{i}]"))
+        imgs.append(wandb.Image(tgt[i],   caption=f"target[{i}]"))
+        imgs.append(wandb.Image(last[i],  caption=f"last_fire[{i}]"))
     run.log({"preview": imgs})
 
 def main():
