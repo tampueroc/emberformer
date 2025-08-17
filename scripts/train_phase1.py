@@ -25,11 +25,9 @@ def init_wandb(cfg):
         name=wb.get("run_name", "phase1"),
         tags=wb.get("tags", []),
         notes=wb.get("notes", ""),
-        config=cfg,  # capture full YAML
+        config=cfg,
         mode=mode if mode in ("online", "offline", "disabled") else "online",
     )
-
-    # nice axes: epoch on x for train/* and val/* metrics
     wandb.define_metric("epoch")
     wandb.define_metric("train/*", step_metric="epoch")
     wandb.define_metric("val/*", step_metric="epoch")
@@ -79,18 +77,46 @@ def preview(run, batch, logits, max_images=4):
         return
     fire, static, wind, target, valid = batch
     probs = torch.sigmoid(logits).detach().cpu()
-    preds = (probs > 0.5).float()  # [B,1,H,W]
-    last = fire[..., -1].detach().cpu()  # [B,1,H,W]
-    tgt = target.detach().cpu()  # [B,1,H,W]
+    preds = (probs > 0.5).float()     # [B,1,H,W]
+    last  = fire[..., -1].detach().cpu()
+    tgt   = target.detach().cpu()
 
     imgs = []
     n = min(max_images, preds.shape[0])
     for i in range(n):
-        # Keep channel dim for wandb.Image: [1,H,W] is OK
+        # Keep channel dim [1,H,W] for wandb.Image
         imgs.append(wandb.Image(preds[i], caption=f"pred[{i}]"))
-        imgs.append(wandb.Image(tgt[i], caption=f"target[{i}]"))
-        imgs.append(wandb.Image(last[i], caption=f"last_fire[{i}]"))
+        imgs.append(wandb.Image(tgt[i],   caption=f"target[{i}]"))
+        imgs.append(wandb.Image(last[i],  caption=f"last_fire[{i}]"))
     run.log({"preview": imgs})
+
+
+def _coerce_float(val, name):
+    """Allow floats as numbers or strings like '1e-3'. Raise clear error otherwise."""
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        try:
+            return float(val)
+        except ValueError:
+            raise ValueError(f"Config field '{name}' must be a number or string float, got: {val!r}")
+    if val is None:
+        return None
+    raise ValueError(f"Config field '{name}' has unsupported type: {type(val)}")
+
+
+def _pick_device(gpu_arg: int | None):
+    if torch.cuda.is_available():
+        if gpu_arg is None:
+            return torch.device("cuda")
+        # validate index
+        n = torch.cuda.device_count()
+        if gpu_arg < 0 or gpu_arg >= n:
+            print(f"[warn] --gpu {gpu_arg} out of range (available: 0..{n-1}); falling back to cuda:0")
+            gpu_arg = 0
+        torch.cuda.set_device(gpu_arg)
+        return torch.device(f"cuda:{gpu_arg}")
+    return torch.device("cpu")
 
 
 def main():
@@ -98,6 +124,7 @@ def main():
     ap.add_argument("--config", default="configs/emberformer.yaml")
     ap.add_argument("--model", default=None, help="copy_last | conv_head2d | tiny3d")
     ap.add_argument("--epochs", type=int, default=None)
+    ap.add_argument("--gpu", type=int, default=None, help="GPU index to use (e.g., 0 or 1)")
     args = ap.parse_args()
 
     cfg = load_cfg(args.config)
@@ -111,11 +138,15 @@ def main():
     tcfg = cfg.get("train", {})
     model_name = args.model or tcfg.get("model", "conv_head2d")
     epochs = args.epochs or tcfg.get("epochs", 1)
-    lr = tcfg.get("lr", 1e-3)
-    wd = tcfg.get("weight_decay", 0.0)
+    lr = _coerce_float(tcfg.get("lr", 1e-3), "train.lr")
+    wd = _coerce_float(tcfg.get("weight_decay", 0.0), "train.weight_decay")
     log_every = tcfg.get("log_images_every", 200)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = _pick_device(args.gpu)
+    if run:
+        run.summary["device"] = str(device)
+    print(f"[phase1] using device: {device}")
+
     model = build_model(model_name, Cs).to(device)
 
     # Optional W&B watch
@@ -146,15 +177,12 @@ def main():
                 # Record shapes once
                 _, _, H, W, T_max = fire.shape
                 if run:
-                    wandb.log(
-                        {"batch/H": H, "batch/W": W, "batch/T_max": T_max, "epoch": epoch},
-                        step=step,
-                    )
+                    wandb.log({"batch/H": H, "batch/W": W, "batch/T_max": T_max, "epoch": epoch}, step=step)
                     run.summary["H"] = H
                     run.summary["W"] = W
                     run.summary["T_max"] = T_max
 
-            logits = call_model(model, fire, static, wind, valid)  # tolerant call
+            logits = call_model(model, fire, static, wind, valid)
             loss = criterion(logits, target)
 
             if optimizer:
@@ -178,23 +206,17 @@ def main():
                     step=step,
                 )
 
-            if run and cfg["wandb"].get("log_batch_preview", True) and (
-                step == 0 or (log_every and step % log_every == 0)
-            ):
+            if run and cfg["wandb"].get("log_batch_preview", True) and (step == 0 or (log_every and step % log_every == 0)):
                 preview(run, batch, logits, max_images=cfg["wandb"].get("max_preview_images", 8))
 
             step += 1
 
         # end epoch
         epoch_acc, epoch_iou = acc.compute().item(), iou.compute().item()
-        acc.reset()
-        iou.reset()
+        acc.reset(); iou.reset()
 
         if run:
-            wandb.log(
-                {"epoch": epoch, "val/acc": epoch_acc, "val/iou": epoch_iou},
-                step=step,
-            )
+            wandb.log({"epoch": epoch, "val/acc": epoch_acc, "val/iou": epoch_iou}, step=step)
 
         print(f"[epoch {epoch}] loss ~ {loss.item():.4f} | acc {epoch_acc:.4f} | IoU {epoch_iou:.4f}")
 
@@ -215,7 +237,6 @@ def main():
         )
         art.add_file(ckpt_path)
         run.log_artifact(art)
-
         run.summary["epochs"] = epochs
 
     if run:
