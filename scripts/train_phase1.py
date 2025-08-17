@@ -2,36 +2,22 @@ import os, time, argparse, yaml, inspect, torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 import torchmetrics
-import wandb
 
 from data import RawFireDataset, collate_fn
 from models import CopyLast, ConvHead2D, Tiny3D
+from utils import (
+    init_wandb,
+    define_common_metrics,
+    watch_model,
+    log_batch_shapes,
+    log_preview_from_batch,
+    save_artifact,
+)
 
 
 def load_cfg(p):
     with open(p, "r") as f:
         return yaml.safe_load(f)
-
-
-def init_wandb(cfg):
-    wb = cfg.get("wandb", {})
-    if not wb.get("enabled", True) or wb.get("mode", "online") == "disabled":
-        return None
-    mode = wb.get("mode", "online")
-    os.environ["WANDB_MODE"] = mode  # respect offline/online
-    run = wandb.init(
-        project=wb.get("project", "emberformer"),
-        entity=wb.get("entity") or None,
-        name=wb.get("run_name", "phase1"),
-        tags=wb.get("tags", []),
-        notes=wb.get("notes", ""),
-        config=cfg,
-        mode=mode if mode in ("online", "offline", "disabled") else "online",
-    )
-    wandb.define_metric("epoch")
-    wandb.define_metric("train/*", step_metric="epoch")
-    wandb.define_metric("val/*", step_metric="epoch")
-    return run
 
 
 def make_loader(cfg):
@@ -71,26 +57,6 @@ def call_model(model, fire, static, wind, valid_tokens):
     return model(fire, static, wind)
 
 
-def preview(run, batch, logits, max_images=4):
-    """Log a small triplet preview: pred / target / last_fire."""
-    if run is None:
-        return
-    fire, static, wind, target, valid = batch
-    probs = torch.sigmoid(logits).detach().cpu()
-    preds = (probs > 0.5).float()     # [B,1,H,W]
-    last  = fire[..., -1].detach().cpu()
-    tgt   = target.detach().cpu()
-
-    imgs = []
-    n = min(max_images, preds.shape[0])
-    for i in range(n):
-        # Keep channel dim [1,H,W] for wandb.Image
-        imgs.append(wandb.Image(preds[i], caption=f"pred[{i}]"))
-        imgs.append(wandb.Image(tgt[i],   caption=f"target[{i}]"))
-        imgs.append(wandb.Image(last[i],  caption=f"last_fire[{i}]"))
-    run.log({"preview": imgs})
-
-
 def _coerce_float(val, name):
     """Allow floats as numbers or strings like '1e-3'. Raise clear error otherwise."""
     if isinstance(val, (int, float)):
@@ -109,7 +75,6 @@ def _pick_device(gpu_arg: int | None):
     if torch.cuda.is_available():
         if gpu_arg is None:
             return torch.device("cuda")
-        # validate index
         n = torch.cuda.device_count()
         if gpu_arg < 0 or gpu_arg >= n:
             print(f"[warn] --gpu {gpu_arg} out of range (available: 0..{n-1}); falling back to cuda:0")
@@ -132,6 +97,9 @@ def main():
     torch.backends.cudnn.benchmark = cfg.get("global", {}).get("cudnn_benchmark", True)
 
     run = init_wandb(cfg)
+    if run:
+        define_common_metrics()
+
     ds, dl = make_loader(cfg)
     Cs = ds.landscape_data.shape[0]
 
@@ -140,18 +108,16 @@ def main():
     epochs = args.epochs or tcfg.get("epochs", 1)
     lr = _coerce_float(tcfg.get("lr", 1e-3), "train.lr")
     wd = _coerce_float(tcfg.get("weight_decay", 0.0), "train.weight_decay")
-    log_every = tcfg.get("log_images_every", 200)
 
     device = _pick_device(args.gpu)
     if run:
         run.summary["device"] = str(device)
+        run.summary["dataset_size"] = len(ds)
     print(f"[phase1] using device: {device}")
 
     model = build_model(model_name, Cs).to(device)
-
-    # Optional W&B watch
-    if run and cfg.get("wandb", {}).get("watch", True):
-        wandb.watch(model, log="gradients", log_freq=100)
+    if run:
+        watch_model(run, model, cfg)
 
     criterion = nn.BCEWithLogitsLoss()
     optimizer = None if isinstance(model, CopyLast) else torch.optim.Adam(
@@ -161,26 +127,19 @@ def main():
     acc = torchmetrics.classification.BinaryAccuracy().to(device)
     iou = torchmetrics.classification.BinaryJaccardIndex().to(device)
 
-    # Summaries
-    if run:
-        run.summary["dataset_size"] = len(ds)
-
     step = 0
-    H = W = T_max = None
+    shapes_logged = False
+    last_batch_cpu = None
+    last_logits_cpu = None
 
     for epoch in range(epochs):
         model.train()
         for batch in dl:
             fire, static, wind, target, valid = [x.to(device) for x in batch]
 
-            if H is None:
-                # Record shapes once
-                _, _, H, W, T_max = fire.shape
-                if run:
-                    wandb.log({"batch/H": H, "batch/W": W, "batch/T_max": T_max, "epoch": epoch}, step=step)
-                    run.summary["H"] = H
-                    run.summary["W"] = W
-                    run.summary["T_max"] = T_max
+            if not shapes_logged and run:
+                log_batch_shapes(run, fire, epoch, step)
+                shapes_logged = True
 
             logits = call_model(model, fire, static, wind, valid)
             loss = criterion(logits, target)
@@ -196,7 +155,7 @@ def main():
                 iou.update(preds, target.int())
 
             if run:
-                wandb.log(
+                run.log(
                     {
                         "epoch": epoch,
                         "step": step,
@@ -206,8 +165,10 @@ def main():
                     step=step,
                 )
 
-            if run and cfg["wandb"].get("log_batch_preview", True) and (step == 0 or (log_every and step % log_every == 0)):
-                preview(run, batch, logits, max_images=cfg["wandb"].get("max_preview_images", 8))
+            # keep a small sample for epoch-end preview
+            last_batch_cpu = (fire.detach().cpu(), static.detach().cpu(),
+                              wind.detach().cpu(), target.detach().cpu(), valid.detach().cpu())
+            last_logits_cpu = logits.detach().cpu()
 
             step += 1
 
@@ -216,7 +177,18 @@ def main():
         acc.reset(); iou.reset()
 
         if run:
-            wandb.log({"epoch": epoch, "val/acc": epoch_acc, "val/iou": epoch_iou}, step=step)
+            run.log({"epoch": epoch, "val/acc": epoch_acc, "val/iou": epoch_iou}, step=step)
+
+            # downsampled preview at epoch end
+            if cfg["wandb"].get("log_batch_preview", True) and last_batch_cpu is not None:
+                log_preview_from_batch(
+                    run,
+                    batch=last_batch_cpu,
+                    logits=last_logits_cpu,
+                    key="preview",
+                    max_images=cfg["wandb"].get("max_preview_images", 8),
+                    size=int(cfg["wandb"].get("preview_size", 160)),
+                )
 
         print(f"[epoch {epoch}] loss ~ {loss.item():.4f} | acc {epoch_acc:.4f} | IoU {epoch_iou:.4f}")
 
@@ -230,13 +202,13 @@ def main():
         )
         torch.save(model.state_dict(), ckpt_path)
 
-        art = wandb.Artifact(
+        save_artifact(
+            run,
+            filepath=ckpt_path,
             name=f"{model_name}-weights",
             type="model",
             metadata={"epochs": epochs, "model": model_name},
         )
-        art.add_file(ckpt_path)
-        run.log_artifact(art)
         run.summary["epochs"] = epochs
 
     if run:

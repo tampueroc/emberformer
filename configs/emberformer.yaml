@@ -50,16 +50,19 @@ weather:
 
 wandb:
   enabled: true
-  mode: offline            # online | offline | disabled
+  mode: offline            # or online
   project: "emberformer"
   entity: ""
   run_name: "phase1-sanity"
-  tags: ["phase1", "sanity", "minimal-model"]
-  notes: "Phase 1: minimal model + dataloader + training loop smoke test"
-  log_artifacts: true
-  log_batch_preview: true
-  log_norm_stats: true
-  max_preview_images: 8
+
+  # preview controls
+  log_batch_preview: true   # keep previews enabled
+  max_preview_images: 2     # fewer images per epoch
+  preview_size: 160         # downsample to ~160 px edge before logging
+
+  # reduce overhead in early phases
+  watch: false              # don't log gradients
+  log_artifacts: false      # skip model files for now
 
 train:
   model: copy_last
