@@ -53,3 +53,55 @@ class Tiny3D(nn.Module):
         y = self.block(x)                          # [B,1,T,H,W]
         return y[:, :, -1]                         # [B,1,H,W]
 
+
+class _DoubleConv(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1),
+            nn.GELU(),
+        )
+    def forward(self, x): return self.block(x)
+
+class _Down(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.pool = nn.MaxPool2d(2)
+        self.conv = _DoubleConv(in_ch, out_ch)
+    def forward(self, x): return self.conv(self.pool(x))
+
+class _Up(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        # in_ch = ch_skip + ch_up
+        self.conv = _DoubleConv(in_ch, out_ch)
+    def forward(self, x_up, x_skip):
+        x_up = F.interpolate(x_up, size=x_skip.shape[-2:], mode="bilinear", align_corners=False)
+        x = torch.cat([x_skip, x_up], dim=1)
+        return self.conv(x)
+
+class UNetS(nn.Module):
+    """
+    Small U-Net for patch grids (Stage C).
+    Input:  [B, 1 + Cs + 2, Gy, Gx]   (last_fire, static bands, wind broadcast)
+    Output: [B, 1, Gy, Gx]            (logits for next-step fire)
+    """
+    def __init__(self, in_ch: int, base: int = 32):
+        super().__init__()
+        c1, c2, c3 = base, base*2, base*4
+        self.inc  = _DoubleConv(in_ch, c1)
+        self.down1 = _Down(c1, c2)
+        self.down2 = _Down(c2, c3)
+        self.up1  = _Up(c3 + c2, c2)
+        self.up2  = _Up(c2 + c1, c1)
+        self.outc = nn.Conv2d(c1, 1, 1)
+
+    def forward(self, x):
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        u2 = self.up1(x3, x2)
+        u1 = self.up2(u2, x1)
+        return self.outc(u1)

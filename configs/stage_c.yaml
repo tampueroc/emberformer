@@ -1,0 +1,74 @@
+# =========================
+# EmberFormer — Stage C (UNet over patch grid)
+# =========================
+
+global:
+  seed: 42
+  cudnn_benchmark: true
+
+data:
+  # Raw root is only used to read targets; tokens are from the cache below
+  data_dir: "~/data/deep_crown_dataset/organized_spreads"
+
+  # Stage C runs on (Gy×Gx) patch grids — you can push the batch size higher
+  batch_size: 32
+  num_workers: 8
+  pin_memory: true
+  drop_last: false
+  shuffle: true
+
+  # kept for completeness (not used by TokenFireDataset enumeration)
+  sequence_length: 3
+
+encoding:
+  fire_channel: 1
+  fire_value: 231
+  isochrone_channel: 1
+  isochrone_value: 231
+
+wandb:
+  enabled: true
+  mode: online
+  project: "emberformer"
+  entity: ""
+  run_name:
+  run_name_template: "{script}-{model}-lr{lr}-{time}"   # script will be train_stage_c_tokens
+
+  tags: []
+  auto_tags: true
+
+  # previews are light (25×25 → upscaled)
+  log_batch_preview: false         # we preview inside the Stage C trainer already
+  max_preview_images: 2
+  preview_size: 160
+
+  watch: false
+  log_artifacts: true              # save checkpoint if you want
+
+train:
+  # Used only for naming in W&B; the Stage C script always runs UNetS
+  model: "unets"
+  epochs: 5
+  lr: 3e-4
+  weight_decay: 1e-4
+  log_images_every: 200
+
+# Cache produced by scripts/build_patch_cache.py
+patchify_on_disk:
+  enabled: true
+  cache_dir: "~/data/emberformer/patch_cache"
+  patch_size: 16
+  stride: 16
+  pad_mode: "strict"
+  log_artifact: true
+
+  # build-time logging knobs (not used by Stage C)
+  progress_use_tqdm: true
+  progress_log_every: 25
+  progress_log_to_wandb: true
+  preview_n: 1
+
+# Optional Stage-C-specific knobs (read by the trainer below)
+stage_c:
+  base_channels: 32     # UNet width
+
