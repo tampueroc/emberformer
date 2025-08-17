@@ -1,0 +1,70 @@
+# configs/stage_c_raw.yaml
+# =========================
+# EmberFormer — Stage C RAW (U-Net over full-resolution pixels)
+# Trains scripts/train_stage_c_raw.py on RawFireDataset (no tokens).
+# =========================
+
+global:
+  seed: 42
+  cudnn_benchmark: true
+
+data:
+  # Root of the organized Deep Crowns dataset you built earlier
+  data_dir: "~/data/deep_crown_dataset/organized_spreads"
+
+  # Full-resolution HxW is memory-heavy; adjust batch_size to your GPU
+  batch_size: 4
+  num_workers: 4
+  pin_memory: true
+  drop_last: false
+  shuffle: true
+
+  # Number of historical frames per sample (trainer will pick last k_fire)
+  sequence_length: 3
+
+encoding:
+  fire_channel: 1
+  fire_value: 231
+  isochrone_channel: 1
+  isochrone_value: 231
+
+wandb:
+  enabled: true
+  mode: online
+  project: "emberformer"
+  entity: ""
+  run_name:
+  run_name_template: "{script}-unets_raw-T{seq}-lr{lr}-{time}"
+
+  tags: []
+  auto_tags: true
+
+  # We log previews directly from the raw trainer
+  log_batch_preview: false
+  max_preview_images: 2
+  preview_size: 400
+
+  watch: false
+  log_artifacts: true
+
+train:
+  # Only used for naming; the raw trainer always runs UNetS
+  model: "unets_raw"
+  epochs: 5
+  lr: 3e-4
+  weight_decay: 1e-4
+  log_images_every: 200
+
+# Stage-C RAW specific knobs (used by scripts/train_stage_c_raw.py)
+stage_c_raw:
+  base_channels: 32     # UNet width
+  k_fire: 1             # how many past fire frames to stack as channels
+
+  # Precision-focused BCE (penalize FP more by increasing neg_weight)
+  loss:
+    neg_weight: 2.0
+    pos_weight: 1.0
+
+  metrics:
+    pred_thresh: 0.5    # probability threshold for binarizing predictions
+
