@@ -1,0 +1,94 @@
+# =========================
+# EmberFormer Configuration - SMALL VERSION
+# For quick experiments or limited GPU memory
+# =========================
+
+global:
+  seed: 42
+  cudnn_benchmark: true
+
+data:
+  data_dir: "~/data/deep_crown_dataset/organized_spreads"
+  batch_size: 8
+  num_workers: 4
+  pin_memory: true
+  drop_last: false
+  shuffle: true
+  sequence_length: 3
+
+encoding:
+  fire_channel: 1
+  fire_value: 231
+  isochrone_channel: 1
+  isochrone_value: 231
+
+wandb:
+  enabled: true
+  mode: online
+  project: "emberformer"
+  entity: ""
+  run_name:
+  run_name_template: "{script}-{model}-lr{lr}-{time}"
+  
+  tags: ["small"]
+  auto_tags: true
+  
+  log_batch_preview: false
+  max_preview_images: 2
+  preview_size: 400
+  
+  watch: false
+  log_artifacts: true
+
+model:
+  # Temporal Transformer Configuration
+  temporal:
+    d_model: 64
+    nhead: 4
+    num_layers: 3
+    dim_feedforward: 256
+    dropout: 0.1
+    max_seq_len: 32
+    use_wind: true
+    use_static: true
+  
+  # Spatial Decoder Configuration
+  spatial:
+    decoder_type: "segformer"
+    pretrained: true
+    model_name: "nvidia/segformer-b0-finetuned-ade-512-512"
+    freeze_initially: false
+    freeze_epochs: 5
+    base_channels: 32
+  
+  # Metrics Configuration
+  metrics:
+    pred_thresh: 0.5
+    target_thresh: 0.05
+    pos_weight: "auto"
+
+train:
+  epochs: 20
+  lr_temporal: 1e-3
+  lr_spatial: 1e-4
+  weight_decay: 1e-4
+  log_images_every: 1
+
+patchify_on_disk:
+  enabled: true
+  cache_dir: "~/data/emberformer/patch_cache"
+  patch_size: 16
+  stride: 16
+  pad_mode: "strict"
+  log_artifact: true
+  
+  progress_use_tqdm: true
+  progress_log_every: 25
+  progress_log_to_wandb: true
+  preview_n: 1
+
+split:
+  train: 0.8
+  val: 0.1
+  test: 0.1
+  seed: 42
