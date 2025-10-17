@@ -70,12 +70,12 @@ model:
   
   loss:
     use_dice: true         # Enable Dice loss (optimizes IoU/F1 directly)
-    bce_weight: 0.5        # Weight for BCE component
-    dice_weight: 0.5       # Weight for Dice component
-                           # Recommended: 0.5/0.5 for balanced, or 0.7/0.3 if precision drops
+    bce_weight: 0.7        # Weight for BCE component (increased to improve precision)
+    dice_weight: 0.3       # Weight for Dice component (reduced to reduce false positives)
+                           # 0.7/0.3 favors precision over recall
 
 train:
-  epochs: 50             # Max epochs (early stopping may end sooner)
+  epochs: 20             # Max epochs (early stopping may end sooner at ~10-15)
   lr_temporal: 1e-3      # Learning rate for temporal components
   lr_spatial: 1e-4       # Learning rate for spatial decoder (lower for pre-trained)
   weight_decay: 1e-4
@@ -85,8 +85,8 @@ train:
   # Early Stopping Configuration
   early_stopping:
     enabled: true        # Enable early stopping
-    patience: 10         # Stop if no improvement for N epochs
-    min_delta: 0.001     # Minimum improvement to count (0.001 = 0.1%)
+    patience: 3          # Stop if no improvement for N epochs (3-5 for large datasets)
+    min_delta: 0.002     # Minimum improvement to count (0.002 = 0.2%)
     mode: "max"          # 'max' for F1/IoU, 'min' for loss
     monitor: "val/f1"    # Metric to monitor: "val/f1", "val/iou", or "val/loss"
 
