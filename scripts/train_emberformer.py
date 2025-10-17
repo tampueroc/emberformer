@@ -464,7 +464,15 @@ def main():
                 
                 # Combined loss: BCE + Dice (configured from yaml)
                 if use_dice:
-                    bce = _masked_bce(logits_pix, y_pix, mask_pix, pos_weight=None)
+                    # Use pos_weight with Dice when precision is too low
+                    if posw_cfg == "auto":
+                        pos_weight = _auto_pos_weight(y_pix, mask_pix).detach().to(device)
+                    elif isinstance(posw_cfg, (int, float)):
+                        pos_weight = torch.tensor(float(posw_cfg), device=device)
+                    else:
+                        pos_weight = None
+                    
+                    bce = _masked_bce(logits_pix, y_pix, mask_pix, pos_weight=pos_weight)
                     dice = _masked_soft_dice_loss(logits_pix, y_pix, mask_pix)
                     loss = bce_weight * bce + dice_weight * dice
                 else:
