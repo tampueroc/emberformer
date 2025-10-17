@@ -287,8 +287,9 @@ def main():
 
     step = 0
     epochs = args.epochs if args.epochs is not None else train_cfg.get("epochs", 20)
-    log_imgs_every = int(train_cfg.get("log_images_every", 200))
-    preview_size = int(cfg["wandb"].get("preview_size", 160))
+    log_imgs_every = int(train_cfg.get("log_images_every", 1))  # Log every epoch by default
+    preview_size = int(cfg["wandb"].get("preview_size", 400))
+    max_preview_images = int(cfg["wandb"].get("max_preview_images", 2))
     freeze_epochs = int(scfg.get("freeze_epochs", 0))
 
     print("\n" + "="*60)
@@ -309,6 +310,7 @@ def main():
         # ----- TRAIN -----
         model.train()
         train_loss_accum = 0.0
+        batch_t_lengths = []  # Track sequence lengths
         pbar = tqdm(dl_train, desc=f"Epoch {ep+1}/{epochs} [Train]", leave=False)
         for batch in pbar:
             X_batch, y_batch = batch
@@ -369,9 +371,18 @@ def main():
             # Update progress bar
             train_loss_accum += loss.item()
             pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+            
+            # Track sequence length statistics
+            batch_t_len = valid_t.sum(dim=1).float().mean().item()
+            batch_t_lengths.append(batch_t_len)
 
             if run:
-                run.log({"epoch": ep, "step": step, "train/loss": loss.item()}, step=step)
+                run.log({
+                    "epoch": ep, 
+                    "step": step, 
+                    "train/loss": loss.item(),
+                    "train/batch_T_avg": batch_t_len,
+                }, step=step)
             step += 1
 
         train_metrics = {f"train/{k}": v.compute().item() for k, v in Mtr.items()}
@@ -426,24 +437,44 @@ def main():
                 # Update val progress bar
                 pbar_val.set_postfix({"loss": f"{vloss.item():.4f}"})
 
-                # Log preview
-                if run and (not logged_preview) and (ep % log_imgs_every == 0 or ep == epochs - 1):
-                    log_grid_preview(run, probs_pix[:2], y_pix[:2], key="val/preview", size=preview_size)
+                # Log validation preview (first batch only, every epoch)
+                if run and (not logged_preview):
+                    log_grid_preview(
+                        run, probs_pix[:max_preview_images], y_pix[:max_preview_images], 
+                        key="val/preview", max_images=max_preview_images, size=preview_size
+                    )
                     logged_preview = True
 
         val_loss = val_loss_total / max(nb, 1)
         val_metrics = {f"val/{k}": v.compute().item() for k, v in Mva.items()}
         for v in Mva.values(): v.reset()
 
-        # Log epoch summary with colors
+        # Log epoch summary to console
         print(f"[Epoch {ep+1:2d}/{epochs}] "
-              f"train_loss={avg_train_loss:.4f} | train_f1={train_metrics['train/f1']:.3f} | "
-              f"val_loss={val_loss:.4f} | val_f1={val_metrics['val/f1']:.3f} | "
-              f"val_iou={val_metrics['val/iou']:.3f}")
+              f"train: loss={avg_train_loss:.4f} f1={train_metrics['train/f1']:.3f} prec={train_metrics['train/prec']:.3f} | "
+              f"val: loss={val_loss:.4f} f1={val_metrics['val/f1']:.3f} prec={val_metrics['val/prec']:.3f} "
+              f"iou={val_metrics['val/iou']:.3f}")
         
-        all_metrics = {"epoch": ep, "val/loss": val_loss, **train_metrics, **val_metrics}
+        # Compute sequence length statistics for this epoch
+        avg_t_len = sum(batch_t_lengths) / len(batch_t_lengths) if batch_t_lengths else 0
+        
+        # Log all metrics to W&B
+        all_metrics = {
+            "epoch": ep, 
+            "train/loss_epoch": avg_train_loss,
+            "train/T_avg_epoch": avg_t_len,
+            "val/loss": val_loss, 
+            **train_metrics, 
+            **val_metrics
+        }
         if run:
             run.log(all_metrics, step=step)
+            
+            # Log current learning rates
+            for param_group_idx, param_group in enumerate(opt.param_groups):
+                run.log({
+                    f"train/lr_group{param_group_idx}": param_group['lr']
+                }, step=step)
 
     print("\n" + "="*60)
     print("Training complete!")
