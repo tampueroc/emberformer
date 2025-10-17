@@ -15,6 +15,7 @@ from torch import amp
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import torchmetrics
+from tqdm import tqdm
 
 from data import TokenFireDataset, collate_tokens_temporal
 from models import EmberFormer
@@ -290,15 +291,26 @@ def main():
     preview_size = int(cfg["wandb"].get("preview_size", 160))
     freeze_epochs = int(scfg.get("freeze_epochs", 0))
 
+    print("\n" + "="*60)
+    print(f"Starting Training: {epochs} epochs")
+    print(f"  Model: EmberFormer ({model.decoder_type} decoder)")
+    print(f"  Train samples: {len(train_set)}")
+    print(f"  Val samples: {len(val_set)}")
+    print(f"  Batch size: {bs}")
+    print(f"  LR temporal: {lr_temporal:.2e}, LR spatial: {lr_spatial:.2e}")
+    print("="*60 + "\n")
+
     for ep in range(epochs):
         # Unfreeze decoder after N epochs
         if ep == freeze_epochs and freeze_epochs > 0:
-            print(f"[Epoch {ep}] Unfreezing spatial decoder")
+            print(f"\n[Epoch {ep}] Unfreezing spatial decoder\n")
             model.unfreeze_decoder()
 
         # ----- TRAIN -----
         model.train()
-        for batch in dl_train:
+        train_loss_accum = 0.0
+        pbar = tqdm(dl_train, desc=f"Epoch {ep+1}/{epochs} [Train]", leave=False)
+        for batch in pbar:
             X_batch, y_batch = batch
             
             # Move to device
@@ -354,20 +366,26 @@ def main():
                 Mtr["f1"].update(p, yb)
                 Mtr["iou"].update(p, yb)
 
+            # Update progress bar
+            train_loss_accum += loss.item()
+            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+
             if run:
                 run.log({"epoch": ep, "step": step, "train/loss": loss.item()}, step=step)
             step += 1
 
         train_metrics = {f"train/{k}": v.compute().item() for k, v in Mtr.items()}
         for v in Mtr.values(): v.reset()
+        avg_train_loss = train_loss_accum / len(dl_train)
 
         # ----- VALIDATION -----
         model.eval()
         val_loss_total = 0.0
         nb = 0
         logged_preview = False
+        pbar_val = tqdm(dl_val, desc=f"Epoch {ep+1}/{epochs} [Val]", leave=False)
         with torch.no_grad():
-            for batch in dl_val:
+            for batch in pbar_val:
                 X_batch, y_batch = batch
                 
                 fire_hist = X_batch["fire_hist"].to(device, non_blocking=True)
@@ -405,6 +423,9 @@ def main():
                 Mva["f1"].update(p, yb)
                 Mva["iou"].update(p, yb)
 
+                # Update val progress bar
+                pbar_val.set_postfix({"loss": f"{vloss.item():.4f}"})
+
                 # Log preview
                 if run and (not logged_preview) and (ep % log_imgs_every == 0 or ep == epochs - 1):
                     log_grid_preview(run, probs_pix[:2], y_pix[:2], key="val/preview", size=preview_size)
@@ -414,17 +435,19 @@ def main():
         val_metrics = {f"val/{k}": v.compute().item() for k, v in Mva.items()}
         for v in Mva.values(): v.reset()
 
-        # Log epoch summary
-        all_metrics = {"epoch": ep, "val/loss": val_loss, **train_metrics, **val_metrics}
-        print(f"[Epoch {ep:2d}] loss={val_loss:.4f} | "
-              f"train f1={train_metrics['train/f1']:.3f} | "
-              f"val f1={val_metrics['val/f1']:.3f} | "
-              f"val iou={val_metrics['val/iou']:.3f}")
+        # Log epoch summary with colors
+        print(f"[Epoch {ep+1:2d}/{epochs}] "
+              f"train_loss={avg_train_loss:.4f} | train_f1={train_metrics['train/f1']:.3f} | "
+              f"val_loss={val_loss:.4f} | val_f1={val_metrics['val/f1']:.3f} | "
+              f"val_iou={val_metrics['val/iou']:.3f}")
         
+        all_metrics = {"epoch": ep, "val/loss": val_loss, **train_metrics, **val_metrics}
         if run:
             run.log(all_metrics, step=step)
 
+    print("\n" + "="*60)
     print("Training complete!")
+    print("="*60)
     if run:
         # Save final model
         save_path = f"emberformer_ep{epochs}.pt"
