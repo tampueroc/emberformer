@@ -2,6 +2,29 @@
 
 **Goal:** Understand what drives fire spread predictions and identify interactions between terrain, wind, temporal history, and extreme events.
 
+**⚠️ IMPORTANT: Run these analyses AFTER model training converges (typically epoch 10-15)**
+
+**Prerequisites:**
+1. ✅ Model trained to convergence (val/f1 > 0.65, early stopping triggered or epoch 15+)
+2. ✅ Best model checkpoint saved: `checkpoints/emberformer_best.pt`
+3. ✅ Validation set available for analysis
+
+**How to Load Converged Model:**
+```python
+from models import EmberFormer
+import torch
+
+# Load best checkpoint
+checkpoint = torch.load('checkpoints/emberformer_best.pt')
+model = EmberFormer(...config...)  # Use same config as training
+model.load_state_dict(checkpoint['model_state_dict'])
+model.eval()
+
+print(f"Loaded model from epoch {checkpoint['epoch']}")
+print(f"Val F1: {checkpoint['val_f1']:.3f}")
+print(f"Val IoU: {checkpoint['val_iou']:.3f}")
+```
+
 ---
 
 ## Research Questions

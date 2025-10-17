@@ -404,6 +404,12 @@ def main():
         monitor_metric = early_stop_cfg.get("monitor", "val/f1")
     else:
         early_stopper = None
+    
+    # Checkpoint directory
+    ckpt_dir = train_cfg.get("checkpoint_dir", "checkpoints")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    best_model_path = None
+    save_checkpoints = train_cfg.get("save_checkpoints", True)
 
     print("\n" + "="*60)
     print(f"Starting Training: {epochs} epochs")
@@ -642,8 +648,8 @@ def main():
                 "train/lr_spatial": opt.param_groups[1]['lr'] if len(opt.param_groups) > 1 else opt.param_groups[0]['lr'],
             }, step=step)
         
-        # Early stopping check
-        if early_stopper:
+        # Save best model checkpoint
+        if save_checkpoints and early_stopper:
             # Extract metric value to monitor
             if monitor_metric == "val/loss":
                 metric_value = val_loss
@@ -652,7 +658,40 @@ def main():
             elif monitor_metric == "val/iou":
                 metric_value = val_metrics['val/iou']
             else:
-                # Default to val/f1
+                metric_value = val_metrics['val/f1']
+            
+            # Check if this is the best epoch
+            is_best = (early_stopper.best_value is None or 
+                      (early_stopper.mode == 'max' and metric_value > early_stopper.best_value) or
+                      (early_stopper.mode == 'min' and metric_value < early_stopper.best_value))
+            
+            if is_best:
+                # Save best model
+                best_model_path = os.path.join(ckpt_dir, f"emberformer_best.pt")
+                torch.save({
+                    'epoch': ep,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': opt.state_dict(),
+                    'val_f1': val_metrics['val/f1'],
+                    'val_iou': val_metrics['val/iou'],
+                    'val_prec': val_metrics['val/prec'],
+                    'val_rec': val_metrics['val/rec'],
+                    'val_acc': val_metrics['val/acc'],
+                    'val_loss': val_loss,
+                    'config': cfg,
+                }, best_model_path)
+                print(f"   💾 Saved best model (epoch {ep+1}, {monitor_metric}={metric_value:.4f})")
+        
+        # Early stopping check
+        if early_stopper:
+            # Extract metric value (same as above)
+            if monitor_metric == "val/loss":
+                metric_value = val_loss
+            elif monitor_metric == "val/f1":
+                metric_value = val_metrics['val/f1']
+            elif monitor_metric == "val/iou":
+                metric_value = val_metrics['val/iou']
+            else:
                 metric_value = val_metrics['val/f1']
             
             should_stop = early_stopper(ep, metric_value)
@@ -673,11 +712,56 @@ def main():
     print("\n" + "="*60)
     print("Training complete!")
     print("="*60)
+    
     if run:
         # Save final model
-        save_path = f"emberformer_ep{epochs}.pt"
-        torch.save(model.state_dict(), save_path)
-        save_artifact(run, save_path, name=f"emberformer-{run.id}", type="model")
+        final_path = os.path.join(ckpt_dir, f"emberformer_final_ep{ep+1}.pt")
+        torch.save({
+            'epoch': ep,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': opt.state_dict(),
+            'val_f1': val_metrics['val/f1'],
+            'val_iou': val_metrics['val/iou'],
+            'val_prec': val_metrics['val/prec'],
+            'val_rec': val_metrics['val/rec'],
+            'val_acc': val_metrics['val/acc'],
+            'val_loss': val_loss,
+            'config': cfg,
+        }, final_path)
+        print(f"💾 Saved final model: {final_path}")
+        
+        if best_model_path:
+            print(f"💾 Best model saved at: {best_model_path}")
+            best_checkpoint = torch.load(best_model_path)
+            save_artifact(run, best_model_path, 
+                         name=f"emberformer-best-{run.id}", 
+                         type="model",
+                         metadata={
+                             'epoch': best_checkpoint['epoch'],
+                             'val_f1': float(best_checkpoint['val_f1']),
+                             'val_iou': float(best_checkpoint['val_iou']),
+                             'val_prec': float(best_checkpoint['val_prec']),
+                             'val_rec': float(best_checkpoint['val_rec']),
+                             'val_acc': float(best_checkpoint['val_acc']),
+                             'val_loss': float(best_checkpoint['val_loss']),
+                             'type': 'best_model',
+                             'monitor_metric': monitor_metric if early_stopper else 'none',
+                         })
+        
+        final_checkpoint = torch.load(final_path)
+        save_artifact(run, final_path, 
+                     name=f"emberformer-final-{run.id}", 
+                     type="model",
+                     metadata={
+                         'epoch': final_checkpoint['epoch'],
+                         'val_f1': float(final_checkpoint['val_f1']),
+                         'val_iou': float(final_checkpoint['val_iou']),
+                         'val_prec': float(final_checkpoint['val_prec']),
+                         'val_rec': float(final_checkpoint['val_rec']),
+                         'val_acc': float(final_checkpoint['val_acc']),
+                         'val_loss': float(final_checkpoint['val_loss']),
+                         'type': 'final_model',
+                     })
         run.finish()
 
 if __name__ == "__main__":
