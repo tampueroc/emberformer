@@ -17,6 +17,8 @@ class PositionalEncoding(nn.Module):
     """Sinusoidal positional encoding for temporal sequences"""
     def __init__(self, d_model: int, max_len: int = 100):
         super().__init__()
+        self.d_model = d_model
+        self.max_len = max_len
         # Create positional encoding matrix
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
@@ -34,6 +36,17 @@ class PositionalEncoding(nn.Module):
         Returns:
             [T, d_model] positional encodings
         """
+        if T > self.max_len:
+            # Dynamically extend positional encodings if needed
+            device = self.pe.device
+            pe_new = torch.zeros(T, self.d_model, device=device)
+            position = torch.arange(0, T, dtype=torch.float, device=device).unsqueeze(1)
+            div_term = torch.exp(torch.arange(0, self.d_model, 2, device=device).float() * (-math.log(10000.0) / self.d_model))
+            
+            pe_new[:, 0::2] = torch.sin(position * div_term)
+            pe_new[:, 1::2] = torch.cos(position * div_term)
+            return pe_new
+        
         return self.pe[:T]
 
 

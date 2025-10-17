@@ -48,7 +48,8 @@ model:
     num_layers: 3            # Number of transformer layers
     dim_feedforward: 256     # Feedforward network dimension
     dropout: 0.1             # Dropout rate
-    max_seq_len: 8           # Max sequence length (>50% of dataset has T≤6)
+    max_seq_len: 32          # Max sequence length (supports up to 32, auto-extends if longer)
+                             # Note: >50% of dataset has T≤6, but some sequences are longer
     use_wind: true           # Include wind embeddings
     use_static: true         # Include static terrain embeddings
   
