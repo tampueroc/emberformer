@@ -92,6 +92,47 @@ def _auto_pos_weight(y_map, mask):
     neg_mass = (mask.float().sum() - pos_mass).clamp_min(1.0)
     return (neg_mass / pos_mass)
 
+def _masked_soft_dice_loss(logits, y, mask, smooth=1.0, ignore_empty=True):
+    """
+    Soft Dice loss over masked pixels. Optimizes for F1/IoU directly.
+    
+    Args:
+        logits: [B, 1, H, W] raw logits
+        y: [B, 1, H, W] targets in [0, 1]
+        mask: [B, 1, H, W] boolean mask
+        smooth: smoothing term to avoid division by zero
+        ignore_empty: if True, samples with no positives don't contribute
+    
+    Returns:
+        scalar Dice loss (1 - Dice coefficient)
+    """
+    p = torch.sigmoid(logits).float()
+    y = y.float()
+    m = mask.float()
+    
+    # Apply mask
+    p = p * m
+    y = y * m
+    
+    # Compute per-sample Dice
+    dims = (1, 2, 3)  # Sum over C, H, W
+    intersection = (p * y).sum(dims)
+    p_sum = p.sum(dims)
+    y_sum = y.sum(dims)
+    
+    dice = (2.0 * intersection + smooth) / (p_sum + y_sum + smooth)
+    
+    if ignore_empty:
+        # Only average over samples that have positive pixels
+        valid = (y_sum > 0)
+        if valid.any():
+            return (1.0 - dice[valid]).mean()
+        else:
+            # No positive pixels in batch → return zero loss
+            return torch.zeros([], device=logits.device, dtype=logits.dtype)
+    else:
+        return (1.0 - dice).mean()
+
 # ----------------
 # Deterministic split helpers
 # ----------------
@@ -179,11 +220,17 @@ def main():
     if run:
         define_common_metrics()
 
-    # Metric/imbalance config
+    # Metric/loss config
     mcfg = cfg.get("model", {}).get("metrics", {})
+    lcfg = cfg.get("model", {}).get("loss", {})
     pred_thresh   = float(mcfg.get("pred_thresh", 0.5))
     target_thresh = float(mcfg.get("target_thresh", 0.05))
     posw_cfg      = mcfg.get("pos_weight", "auto")
+    
+    # Loss configuration
+    use_dice = lcfg.get("use_dice", True)
+    bce_weight = float(lcfg.get("bce_weight", 0.5))
+    dice_weight = float(lcfg.get("dice_weight", 0.5))
 
     # Deterministic split
     split_cfg = cfg.get("split", {})
@@ -300,6 +347,10 @@ def main():
     print(f"  Val samples: {len(val_set)}")
     print(f"  Batch size: {bs}")
     print(f"  LR temporal: {lr_temporal:.2e}, LR spatial: {lr_spatial:.2e}")
+    if use_dice:
+        print(f"  Loss: BCE ({bce_weight}) + Dice ({dice_weight})")
+    else:
+        print(f"  Loss: BCE only (pos_weight={posw_cfg})")
     if run:
         print(f"  W&B run: {run.name} ({run.id})")
         print(f"  W&B url: {run.url}")
@@ -344,15 +395,20 @@ def main():
                 mask = valid.view(-1, 1, gH, gW)
                 mask_pix = F.interpolate(mask.float(), scale_factor=P, mode="nearest").bool()
                 
-                # Pos weight
-                if posw_cfg == "auto":
-                    pos_weight = _auto_pos_weight(y_pix, mask_pix).detach().to(device)
-                elif isinstance(posw_cfg, (int, float)):
-                    pos_weight = torch.tensor(float(posw_cfg), device=device)
+                # Combined loss: BCE + Dice (configured from yaml)
+                if use_dice:
+                    bce = _masked_bce(logits_pix, y_pix, mask_pix, pos_weight=None)
+                    dice = _masked_soft_dice_loss(logits_pix, y_pix, mask_pix)
+                    loss = bce_weight * bce + dice_weight * dice
                 else:
-                    pos_weight = None
-                
-                loss = _masked_bce(logits_pix, y_pix, mask_pix, pos_weight)
+                    # Fallback to BCE only with pos_weight
+                    if posw_cfg == "auto":
+                        pos_weight = _auto_pos_weight(y_pix, mask_pix).detach().to(device)
+                    elif isinstance(posw_cfg, (int, float)):
+                        pos_weight = torch.tensor(float(posw_cfg), device=device)
+                    else:
+                        pos_weight = None
+                    loss = _masked_bce(logits_pix, y_pix, mask_pix, pos_weight)
 
             scaler.scale(loss).backward()
             scaler.step(opt)
@@ -387,6 +443,11 @@ def main():
                     "train/loss_step": loss.item(),
                     "train/batch_T_avg": batch_t_len,
                 }
+                
+                # Log individual loss components
+                if use_dice:
+                    log_dict["train/bce_step"] = bce.item()
+                    log_dict["train/dice_step"] = dice.item()
                 
                 # Log step-level metrics every N steps (not every step to reduce overhead)
                 if step % log_metrics_every == 0:
@@ -432,7 +493,14 @@ def main():
                     y_pix = F.interpolate(y_map, scale_factor=P, mode="nearest")
                     mask = valid.view(-1, 1, gH, gW)
                     mask_pix = F.interpolate(mask.float(), scale_factor=P, mode="nearest").bool()
-                    vloss = _masked_bce(logits_pix, y_pix, mask_pix, None)
+                    
+                    # Use same loss as training
+                    if use_dice:
+                        bce_val = _masked_bce(logits_pix, y_pix, mask_pix, None)
+                        dice_val = _masked_soft_dice_loss(logits_pix, y_pix, mask_pix)
+                        vloss = bce_weight * bce_val + dice_weight * dice_val
+                    else:
+                        vloss = _masked_bce(logits_pix, y_pix, mask_pix, None)
                 
                 val_loss_total += float(vloss)
                 nb += 1
@@ -465,7 +533,8 @@ def main():
         for v in Mva.values(): v.reset()
 
         # Log epoch summary to console
-        print(f"[Epoch {ep+1:2d}/{epochs}] "
+        loss_str = f"BCE+Dice" if use_dice else "BCE"
+        print(f"[Epoch {ep+1:2d}/{epochs}] {loss_str} | "
               f"train: loss={avg_train_loss:.4f} f1={train_metrics['train/f1']:.3f} prec={train_metrics['train/prec']:.3f} | "
               f"val: loss={val_loss:.4f} f1={val_metrics['val/f1']:.3f} prec={val_metrics['val/prec']:.3f} "
               f"iou={val_metrics['val/iou']:.3f}")

@@ -62,11 +62,17 @@ model:
     freeze_epochs: 5           # Unfreeze after N epochs (0 = never freeze)
     base_channels: 48          # For UNet decoder (balanced)
   
-  # Metrics Configuration
+  # Metrics & Loss Configuration
   metrics:
     pred_thresh: 0.5       # Threshold for model probabilities
     target_thresh: 0.05    # Consider patch positive if >5% pixels are fire
-    pos_weight: "auto"     # "auto" or float (e.g., 10.0)
+    pos_weight: "auto"     # "auto" or float (only used if use_dice=False)
+  
+  loss:
+    use_dice: true         # Enable Dice loss (optimizes IoU/F1 directly)
+    bce_weight: 0.5        # Weight for BCE component
+    dice_weight: 0.5       # Weight for Dice component
+                           # Recommended: 0.5/0.5 for balanced, or 0.7/0.3 if precision drops
 
 train:
   epochs: 20
