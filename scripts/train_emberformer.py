@@ -726,9 +726,30 @@ def main():
         
         if best_model_path:
             print(f"💾 Best model saved at: {best_model_path}")
-            save_artifact(run, best_model_path, name=f"emberformer-best-{run.id}", type="model")
+            best_checkpoint = torch.load(best_model_path)
+            save_artifact(run, best_model_path, 
+                         name=f"emberformer-best-{run.id}", 
+                         type="model",
+                         metadata={
+                             'epoch': best_checkpoint['epoch'],
+                             'val_f1': float(best_checkpoint['val_f1']),
+                             'val_iou': float(best_checkpoint['val_iou']),
+                             'val_loss': float(best_checkpoint['val_loss']),
+                             'type': 'best_model',
+                             'monitor_metric': monitor_metric if early_stopper else 'none',
+                         })
         
-        save_artifact(run, final_path, name=f"emberformer-final-{run.id}", type="model")
+        final_checkpoint = torch.load(final_path)
+        save_artifact(run, final_path, 
+                     name=f"emberformer-final-{run.id}", 
+                     type="model",
+                     metadata={
+                         'epoch': final_checkpoint['epoch'],
+                         'val_f1': float(final_checkpoint['val_f1']),
+                         'val_iou': float(final_checkpoint['val_iou']),
+                         'val_loss': float(final_checkpoint['val_loss']),
+                         'type': 'final_model',
+                     })
         run.finish()
 
 if __name__ == "__main__":
