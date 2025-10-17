@@ -1,5 +1,78 @@
 import torch
 
+def collate_tokens_temporal(batch):
+    """
+    Collate function for TokenFireDataset with use_history=True.
+    Left-pads temporal dimension to T_max across batch.
+
+    Args:
+        batch: list of tuples (X, y) where X is a dict with:
+            static:    [N, Cs]
+            fire_hist: [T_hist_i, N]
+            wind_hist: [T_hist_i, 2]
+            valid:     [N] (spatial validity)
+            meta:      [2] (Gy, Gx)
+
+    Returns:
+        X_batch: dict with
+            static:    [B, N, Cs]
+            fire_hist: [B, N, T_max]
+            wind_hist: [B, T_max, 2]
+            valid:     [B, N]
+            valid_t:   [B, T_max] (temporal validity: True=real, False=pad)
+            meta:      [B, 2] or list of [2] tensors
+        y_batch: [B, N]
+    """
+    X_list, y_list = zip(*batch)
+    B = len(X_list)
+    
+    # Determine T_max
+    T_max = max(X["fire_hist"].shape[0] for X in X_list)
+    
+    # Get dimensions from first sample
+    N, Cs = X_list[0]["static"].shape
+    
+    # Infer dtype/device from first sample
+    static_dtype, static_device = X_list[0]["static"].dtype, X_list[0]["static"].device
+    fire_dtype, fire_device = X_list[0]["fire_hist"].dtype, X_list[0]["fire_hist"].device
+    wind_dtype, wind_device = X_list[0]["wind_hist"].dtype, X_list[0]["wind_hist"].device
+    valid_dtype, valid_device = X_list[0]["valid"].dtype, X_list[0]["valid"].device
+    
+    # Allocate batch tensors
+    static_batch = torch.empty((B, N, Cs), dtype=static_dtype, device=static_device)
+    fire_hist_batch = torch.zeros((B, N, T_max), dtype=fire_dtype, device=fire_device)
+    wind_hist_batch = torch.zeros((B, T_max, 2), dtype=wind_dtype, device=wind_device)
+    valid_batch = torch.empty((B, N), dtype=valid_dtype, device=valid_device)
+    valid_t_batch = torch.zeros((B, T_max), dtype=torch.bool, device=fire_device)
+    y_batch = torch.empty((B, N), dtype=y_list[0].dtype, device=y_list[0].device)
+    
+    meta_list = []
+    
+    for i, (X, y) in enumerate(batch):
+        T_hist_i = X["fire_hist"].shape[0]
+        
+        # Left-pad: place real data at the end
+        fire_hist_batch[i, :, -T_hist_i:] = X["fire_hist"].T  # [T_hist,N] -> [N,T_hist]
+        wind_hist_batch[i, -T_hist_i:, :] = X["wind_hist"]    # [T_hist,2]
+        valid_t_batch[i, -T_hist_i:] = True
+        
+        static_batch[i] = X["static"]
+        valid_batch[i] = X["valid"]
+        y_batch[i] = y
+        meta_list.append(X["meta"])
+    
+    X_batch = {
+        "static": static_batch,
+        "fire_hist": fire_hist_batch,
+        "wind_hist": wind_hist_batch,
+        "valid": valid_batch,
+        "valid_t": valid_t_batch,
+        "meta": meta_list,  # Keep as list, or stack if needed
+    }
+    
+    return X_batch, y_batch
+
+
 def collate_fn(batch):
     """
     Left-pad variable-length sequences and emit a validity mask.
