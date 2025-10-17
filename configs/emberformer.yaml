@@ -9,7 +9,7 @@ global:
 
 data:
   data_dir: "~/data/deep_crown_dataset/organized_spreads"
-  batch_size: 32  # Increased for RTX 3090 (24GB) - was way too conservative at 8
+  batch_size: 16  # Balanced for RTX 3090 (24GB) - safe margin
   num_workers: 8
   pin_memory: true
   drop_last: false
@@ -43,10 +43,10 @@ wandb:
 model:
   # Temporal Transformer Configuration
   temporal:
-    d_model: 128             # Embedding dimension (increased from 64)
-    nhead: 8                 # Number of attention heads (increased from 4)
-    num_layers: 6            # Number of transformer layers (increased from 3)
-    dim_feedforward: 512     # Feedforward network dimension (increased from 256)
+    d_model: 96              # Embedding dimension (balanced - between 64 and 128)
+    nhead: 8                 # Number of attention heads
+    num_layers: 4            # Number of transformer layers (balanced)
+    dim_feedforward: 384     # Feedforward network dimension (balanced)
     dropout: 0.1             # Dropout rate
     max_seq_len: 32          # Max sequence length (supports up to 32, auto-extends if longer)
                              # Note: >50% of dataset has T≤6, but some sequences are longer
@@ -57,10 +57,10 @@ model:
   spatial:
     decoder_type: "segformer"  # "segformer" or "unet"
     pretrained: true           # Load pre-trained weights
-    model_name: "nvidia/segformer-b2-finetuned-ade-512-512"  # Upgraded from B0 to B2
+    model_name: "nvidia/segformer-b1-finetuned-ade-512-512"  # B1 - middle ground
     freeze_initially: false    # Freeze decoder at start
     freeze_epochs: 5           # Unfreeze after N epochs (0 = never freeze)
-    base_channels: 64          # For UNet decoder (increased from 32)
+    base_channels: 48          # For UNet decoder (balanced)
   
   # Metrics Configuration
   metrics:
