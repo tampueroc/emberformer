@@ -13,6 +13,18 @@ class TokenFireDataset(torch.utils.data.Dataset):
     If use_history=False (backward compat):
       X = {static_tokens [N,Cs], fire_last [N], wind_last [2], valid [N], meta}
 
+    IMPORTANT: Sliding Window Implementation
+    -----------------------------------------
+    For a sequence with T frames, creates T-1 training samples with EXPANDING history:
+      Sample 0: [frame0] → predicts frame1           (T_hist=1)
+      Sample 1: [frame0, frame1] → predicts frame2   (T_hist=2)
+      Sample 2: [frame0, frame1, frame2] → predicts frame3  (T_hist=3)
+      ...
+      Sample T-2: [frame0, ..., frameT-2] → predicts frameT-1  (T_hist=T-1)
+    
+    Each sample uses ALL history from the beginning up to t_last.
+    The collate_tokens_temporal function left-pads to T_max in the batch.
+
     Supports both:
       - NEW: single file fire tokens: fire_tokens.npy  [T, N]
       - OLD: per-frame files: fires:{ "0": "fire_tokens_t000.npy", ... }
