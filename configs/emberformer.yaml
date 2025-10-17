@@ -1,6 +1,6 @@
 # =========================
-# EmberFormer master config
-# Phase 0/1
+# EmberFormer Configuration
+# Temporal Transformer + SegFormer Spatial Decoder
 # =========================
 
 global:
@@ -9,17 +9,12 @@ global:
 
 data:
   data_dir: "~/data/deep_crown_dataset/organized_spreads"
-  sequence_length: 3
-  batch_size: 4
+  batch_size: 8  # Lower than Stage C due to temporal sequences
   num_workers: 4
   pin_memory: true
   drop_last: false
   shuffle: true
-
-  collate: left_pad_time
-  enforce_spatial_size: null
-  resize_mode: pad
-  constant_pad_value: 0
+  sequence_length: 3  # Not actively used, kept for compatibility
 
 encoding:
   fire_channel: 1
@@ -27,58 +22,76 @@ encoding:
   isochrone_channel: 1
   isochrone_value: 231
 
-weather:
-  folder: "landscape/Weathers"
-  history_csv: "landscape/WeatherHistory.csv"
-  ws_col: "WS"
-  wd_col: "WD"
-
 wandb:
   enabled: true
-  mode: online                # or offline
+  mode: online
   project: "emberformer"
   entity: ""
-
-  # leave run_name empty to use the template
   run_name:
-  run_name_template: "{script}-{model}-T{seq}-lr{lr}-{time}"
-
-  # Optional manual tags get merged with auto-tags below
+  run_name_template: "{script}-{model}-lr{lr}-{time}"
+  
   tags: []
-  auto_tags: true             # adds: script:{script}, model:{model}, T:{seq}
-
-  # preview controls
-  log_batch_preview: true
+  auto_tags: true
+  
+  log_batch_preview: false
   max_preview_images: 2
-  preview_size: 160
-
-  # reduce overhead early on
+  preview_size: 400
+  
   watch: false
-  log_artifacts: false
+  log_artifacts: true
+
+model:
+  # Temporal Transformer Configuration
+  temporal:
+    d_model: 64              # Embedding dimension
+    nhead: 4                 # Number of attention heads
+    num_layers: 3            # Number of transformer layers
+    dim_feedforward: 256     # Feedforward network dimension
+    dropout: 0.1             # Dropout rate
+    max_seq_len: 8           # Max sequence length (>50% of dataset has T≤6)
+    use_wind: true           # Include wind embeddings
+    use_static: true         # Include static terrain embeddings
+  
+  # Spatial Decoder Configuration
+  spatial:
+    decoder_type: "segformer"  # "segformer" or "unet"
+    pretrained: true           # Load pre-trained weights
+    model_name: "nvidia/segformer-b0-finetuned-ade-512-512"
+    freeze_initially: false    # Freeze decoder at start
+    freeze_epochs: 5           # Unfreeze after N epochs (0 = never freeze)
+    base_channels: 32          # For UNet decoder (if used)
+  
+  # Metrics Configuration
+  metrics:
+    pred_thresh: 0.5       # Threshold for model probabilities
+    target_thresh: 0.05    # Consider patch positive if >5% pixels are fire
+    pos_weight: "auto"     # "auto" or float (e.g., 10.0)
 
 train:
-  model: copy_last            # copy_last | conv_head2d | tiny3d
-  epochs: 1
-  lr: 1e-3
-  weight_decay: 0.0
-  log_images_every: 200
+  epochs: 20
+  lr_temporal: 1e-3      # Learning rate for temporal components
+  lr_spatial: 1e-4       # Learning rate for spatial decoder (lower for pre-trained)
+  weight_decay: 1e-4
+  log_images_every: 5    # Log validation previews every N epochs
 
-checks:
-  sample_count: 16
-  fail_on_mixed_hw: true
-  assert_ws_wd_present: true
-  assert_frames_match: true
-
-
+# Patch cache configuration
 patchify_on_disk:
   enabled: true
   cache_dir: "~/data/emberformer/patch_cache"
   patch_size: 16
-  stride: 16                 # unused for now (non-overlapping)
-  pad_mode: "strict"         # <— assert H%P==0 and W%P==0, no padding
+  stride: 16
+  pad_mode: "strict"
   log_artifact: true
-
+  
+  # Build-time knobs (not used by training)
   progress_use_tqdm: true
-  progress_log_every: 5
+  progress_log_every: 25
   progress_log_to_wandb: true
   preview_n: 1
+
+# Data split configuration
+split:
+  train: 0.8
+  val: 0.1
+  test: 0.1
+  seed: 42
