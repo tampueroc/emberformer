@@ -288,6 +288,7 @@ def main():
     step = 0
     epochs = args.epochs if args.epochs is not None else train_cfg.get("epochs", 20)
     log_imgs_every = int(train_cfg.get("log_images_every", 1))  # Log every epoch by default
+    log_metrics_every = int(train_cfg.get("log_metrics_every", 50))  # Log metrics every N steps
     preview_size = int(cfg["wandb"].get("preview_size", 400))
     max_preview_images = int(cfg["wandb"].get("max_preview_images", 2))
     freeze_epochs = int(scfg.get("freeze_epochs", 0))
@@ -299,6 +300,9 @@ def main():
     print(f"  Val samples: {len(val_set)}")
     print(f"  Batch size: {bs}")
     print(f"  LR temporal: {lr_temporal:.2e}, LR spatial: {lr_spatial:.2e}")
+    if run:
+        print(f"  W&B run: {run.name} ({run.id})")
+        print(f"  W&B url: {run.url}")
     print("="*60 + "\n")
 
     for ep in range(epochs):
@@ -376,13 +380,24 @@ def main():
             batch_t_len = valid_t.sum(dim=1).float().mean().item()
             batch_t_lengths.append(batch_t_len)
 
+            # Log to W&B
             if run:
-                run.log({
+                log_dict = {
                     "epoch": ep, 
-                    "step": step, 
-                    "train/loss": loss.item(),
+                    "train/loss_step": loss.item(),
                     "train/batch_T_avg": batch_t_len,
-                }, step=step)
+                }
+                
+                # Log step-level metrics every N steps (not every step to reduce overhead)
+                if step % log_metrics_every == 0:
+                    # Compute current metrics (don't reset)
+                    step_metrics = {
+                        f"train/{k}_step": v.compute().item() 
+                        for k, v in Mtr.items()
+                    }
+                    log_dict.update(step_metrics)
+                
+                run.log(log_dict, step=step)
             step += 1
 
         train_metrics = {f"train/{k}": v.compute().item() for k, v in Mtr.items()}
@@ -463,18 +478,25 @@ def main():
             "epoch": ep, 
             "train/loss_epoch": avg_train_loss,
             "train/T_avg_epoch": avg_t_len,
-            "val/loss": val_loss, 
-            **train_metrics, 
-            **val_metrics
+            "val/loss_epoch": val_loss, 
         }
+        
+        # Add epoch-level train metrics (with _epoch suffix for clarity)
+        for k, v in train_metrics.items():
+            all_metrics[f"{k}_epoch"] = v
+        
+        # Add epoch-level val metrics (with _epoch suffix for clarity)
+        for k, v in val_metrics.items():
+            all_metrics[f"{k}_epoch"] = v
+        
         if run:
             run.log(all_metrics, step=step)
             
             # Log current learning rates
-            for param_group_idx, param_group in enumerate(opt.param_groups):
-                run.log({
-                    f"train/lr_group{param_group_idx}": param_group['lr']
-                }, step=step)
+            run.log({
+                "train/lr_temporal": opt.param_groups[0]['lr'],
+                "train/lr_spatial": opt.param_groups[1]['lr'] if len(opt.param_groups) > 1 else opt.param_groups[0]['lr'],
+            }, step=step)
 
     print("\n" + "="*60)
     print("Training complete!")
