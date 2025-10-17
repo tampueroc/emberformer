@@ -9,6 +9,7 @@ from torchvision.io import read_image
 from tqdm import tqdm
 
 from data.dataset_raw import RawFireDataset
+from utils.patchify import valid_token_mask_from_footprint
 import yaml
 
 # ----------------
@@ -115,7 +116,21 @@ def build_one_sequence(ds: RawFireDataset, seq_id: str, out_dir: str, pcfg: dict
 
     _ensure_dir(out_dir)
     np.save(os.path.join(out_dir, "static_tokens.npy"), static_tokens)
-    np.save(os.path.join(out_dir, "valid_tokens.npy"),  np.ones((N,), dtype=np.bool_))
+    
+    # Compute spatial validity mask from footprint
+    if pad_mode == "strict":
+        # No padding, all tokens valid
+        valid_tokens_mask = np.ones((N,), dtype=np.bool_)
+    else:
+        # Compute mask for non-strict padding
+        pad_bottom = meta.get("pad_bottom", 0)
+        pad_right = meta.get("pad_right", 0)
+        valid_tokens_tensor = valid_token_mask_from_footprint(
+            H=H, W=W, patch=P, pad_bottom=pad_bottom, pad_right=pad_right
+        )
+        valid_tokens_mask = valid_tokens_tensor.view(-1).numpy()  # [Gy*Gx] -> [N]
+    
+    np.save(os.path.join(out_dir, "valid_tokens.npy"), valid_tokens_mask)
 
     # --- NEW: save all fire tokens in ONE file: [T, N] ---
     fire_tok = np.empty((T_all, N), dtype=np.float32)

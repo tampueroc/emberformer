@@ -7,19 +7,23 @@ from torchvision.io import read_image
 class TokenFireDataset(torch.utils.data.Dataset):
     """
     Loads per-sequence patch tokens from disk and yields training pairs:
-      X = {static_tokens [N,Cs], last_fire_tokens [N], wind_last [2]}
+      X = {static_tokens [N,Cs], fire_hist [T_hist,N], wind_hist [T_hist,2], valid [N], meta}
       y = {target_patch_labels [N]}  (mean of target mask within each patch)
+
+    If use_history=False (backward compat):
+      X = {static_tokens [N,Cs], fire_last [N], wind_last [2], valid [N], meta}
 
     Supports both:
       - NEW: single file fire tokens: fire_tokens.npy  [T, N]
       - OLD: per-frame files: fires:{ "0": "fire_tokens_t000.npy", ... }
     """
-    def __init__(self, cache_dir: str, raw_root: str, sequence_length=3, fire_value=231):
+    def __init__(self, cache_dir: str, raw_root: str, sequence_length=3, fire_value=231, use_history=True):
         super().__init__()
         self.cache_dir = os.path.expanduser(cache_dir)
         self.raw_root  = os.path.expanduser(raw_root)
         self.sequence_length = sequence_length
         self.fire_value = fire_value
+        self.use_history = use_history
 
         self.seq_dirs = sorted(d for d in os.listdir(self.cache_dir) if d.startswith("sequence_"))
         self.samples = []  # each = (seq_dir, t_last)
@@ -51,36 +55,59 @@ class TokenFireDataset(torch.utils.data.Dataset):
         valid  = np.load(os.path.join(seq_path, meta["valid_tokens"]),  mmap_mode="r")  # [N]
         wind   = np.load(os.path.join(seq_path, meta["wind"]),          mmap_mode="r")  # [T,2]
 
-        # NEW: single-file path
-        fire_last = None
-        if "fire_tokens" in meta:
-            ft = np.load(os.path.join(seq_path, meta["fire_tokens"]), mmap_mode="r")    # [T,N]
-            fire_last = ft[t_last]
-        else:
-            # OLD format fallback
-            fire_last = np.load(os.path.join(seq_path, meta["fires"][str(t_last)]))     # [N]
-
         t_next = t_last + 1
         seq_id_int = int(meta["sequence_id"])
         P = int(meta["patch_size"])
         y_patch = self._target_patch_avg(seq_id_int, t_next, P)
 
         static_np = np.asarray(static).copy()
-        fire_np   = np.asarray(fire_last).copy()
-        wind_np   = np.asarray(wind[t_last]).copy()
         valid_np  = np.asarray(valid).copy()
 
         gH = meta.get("Gy") or meta.get("grid_h")
         gW = meta.get("Gx") or meta.get("grid_w")
         grid_hw = torch.tensor([gH, gW], dtype=torch.int32)
 
-        X = {
-            "static":    torch.from_numpy(static_np).float(),   # [N,Cs]
-            "fire_last": torch.from_numpy(fire_np).float(),     # [N]
-            "wind_last": torch.from_numpy(wind_np).float(),     # [2]
-            "valid":     torch.from_numpy(valid_np).bool(),     # [N]a
-            "meta":      grid_hw,
-        }
+        if self.use_history:
+            # Return full temporal history: fire_hist [T_hist, N], wind_hist [T_hist, 2]
+            if "fire_tokens" in meta:
+                ft = np.load(os.path.join(seq_path, meta["fire_tokens"]), mmap_mode="r")    # [T,N]
+                fire_hist = ft[:t_last+1]  # [T_hist, N] where T_hist = t_last+1
+            else:
+                # OLD format fallback: load each frame individually
+                fire_hist_list = []
+                for t in range(t_last + 1):
+                    fire_hist_list.append(np.load(os.path.join(seq_path, meta["fires"][str(t)])))
+                fire_hist = np.stack(fire_hist_list, axis=0)  # [T_hist, N]
+            
+            wind_hist = wind[:t_last+1]  # [T_hist, 2]
+            
+            X = {
+                "static":    torch.from_numpy(static_np).float(),        # [N,Cs]
+                "fire_hist": torch.from_numpy(fire_hist.copy()).float(), # [T_hist,N]
+                "wind_hist": torch.from_numpy(wind_hist.copy()).float(), # [T_hist,2]
+                "valid":     torch.from_numpy(valid_np).bool(),          # [N]
+                "meta":      grid_hw,
+            }
+        else:
+            # Backward compatibility: return only last frame
+            if "fire_tokens" in meta:
+                ft = np.load(os.path.join(seq_path, meta["fire_tokens"]), mmap_mode="r")    # [T,N]
+                fire_last = ft[t_last]
+            else:
+                # OLD format fallback
+                fire_last = np.load(os.path.join(seq_path, meta["fires"][str(t_last)]))     # [N]
+            
+            fire_np   = np.asarray(fire_last).copy()
+            wind_np   = np.asarray(wind[t_last]).copy()
+            
+            X = {
+                "static":    torch.from_numpy(static_np).float(),   # [N,Cs]
+                "fire_last": torch.from_numpy(fire_np).float(),     # [N]
+                "wind_last": torch.from_numpy(wind_np).float(),     # [2]
+                "valid":     torch.from_numpy(valid_np).bool(),     # [N]
+                "meta":      grid_hw,
+            }
+
         y = y_patch.float()                                                  # [N]
         return X, y
 
