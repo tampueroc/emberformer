@@ -22,6 +22,59 @@ from models import EmberFormer
 from utils import init_wandb, define_common_metrics, save_artifact, log_grid_preview
 
 # ----------------
+# Early Stopping
+# ----------------
+class EarlyStopping:
+    """Early stopping to stop training when validation metric stops improving"""
+    def __init__(self, patience=5, min_delta=0.0, mode='max'):
+        """
+        Args:
+            patience: Number of epochs to wait for improvement
+            min_delta: Minimum change to qualify as improvement
+            mode: 'max' for metrics to maximize (F1, IoU), 'min' for loss
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode
+        self.counter = 0
+        self.best_value = None
+        self.early_stop = False
+        self.best_epoch = 0
+    
+    def __call__(self, epoch, value):
+        """
+        Returns True if should stop training
+        """
+        if self.best_value is None:
+            self.best_value = value
+            self.best_epoch = epoch
+            return False
+        
+        if self.mode == 'max':
+            improved = value > (self.best_value + self.min_delta)
+        else:
+            improved = value < (self.best_value - self.min_delta)
+        
+        if improved:
+            self.best_value = value
+            self.best_epoch = epoch
+            self.counter = 0
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+                return True
+        
+        return False
+    
+    def state_dict(self):
+        return {
+            'best_value': self.best_value,
+            'best_epoch': self.best_epoch,
+            'counter': self.counter,
+        }
+
+# ----------------
 # Config helpers
 # ----------------
 def load_cfg(p):
@@ -339,6 +392,18 @@ def main():
     preview_size = int(cfg["wandb"].get("preview_size", 400))
     max_preview_images = int(cfg["wandb"].get("max_preview_images", 2))
     freeze_epochs = int(scfg.get("freeze_epochs", 0))
+    
+    # Early stopping
+    early_stop_cfg = train_cfg.get("early_stopping", {})
+    if early_stop_cfg.get("enabled", False):
+        early_stopper = EarlyStopping(
+            patience=int(early_stop_cfg.get("patience", 10)),
+            min_delta=float(early_stop_cfg.get("min_delta", 0.001)),
+            mode=early_stop_cfg.get("mode", "max")  # 'max' for F1/IoU, 'min' for loss
+        )
+        monitor_metric = early_stop_cfg.get("monitor", "val/f1")
+    else:
+        early_stopper = None
 
     print("\n" + "="*60)
     print(f"Starting Training: {epochs} epochs")
@@ -351,6 +416,8 @@ def main():
         print(f"  Loss: BCE ({bce_weight}) + Dice ({dice_weight})")
     else:
         print(f"  Loss: BCE only (pos_weight={posw_cfg})")
+    if early_stopper:
+        print(f"  Early stopping: enabled (patience={early_stopper.patience}, monitor={monitor_metric})")
     if run:
         print(f"  W&B run: {run.name} ({run.id})")
         print(f"  W&B url: {run.url}")
@@ -566,6 +633,34 @@ def main():
                 "train/lr_temporal": opt.param_groups[0]['lr'],
                 "train/lr_spatial": opt.param_groups[1]['lr'] if len(opt.param_groups) > 1 else opt.param_groups[0]['lr'],
             }, step=step)
+        
+        # Early stopping check
+        if early_stopper:
+            # Extract metric value to monitor
+            if monitor_metric == "val/loss":
+                metric_value = val_loss
+            elif monitor_metric == "val/f1":
+                metric_value = val_metrics['val/f1']
+            elif monitor_metric == "val/iou":
+                metric_value = val_metrics['val/iou']
+            else:
+                # Default to val/f1
+                metric_value = val_metrics['val/f1']
+            
+            should_stop = early_stopper(ep, metric_value)
+            
+            if run:
+                run.log({
+                    "early_stop/counter": early_stopper.counter,
+                    "early_stop/best_value": early_stopper.best_value,
+                    "early_stop/best_epoch": early_stopper.best_epoch,
+                }, step=step)
+            
+            if should_stop:
+                print(f"\n🛑 Early stopping triggered!")
+                print(f"   Best {monitor_metric}: {early_stopper.best_value:.4f} at epoch {early_stopper.best_epoch}")
+                print(f"   No improvement for {early_stopper.patience} epochs")
+                break
 
     print("\n" + "="*60)
     print("Training complete!")

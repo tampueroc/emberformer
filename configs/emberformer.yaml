@@ -75,12 +75,20 @@ model:
                            # Recommended: 0.5/0.5 for balanced, or 0.7/0.3 if precision drops
 
 train:
-  epochs: 20
+  epochs: 50             # Max epochs (early stopping may end sooner)
   lr_temporal: 1e-3      # Learning rate for temporal components
   lr_spatial: 1e-4       # Learning rate for spatial decoder (lower for pre-trained)
   weight_decay: 1e-4
   log_images_every: 1    # Log validation previews every N epochs
   log_metrics_every: 50  # Log train metrics (prec, f1, etc.) every N steps
+  
+  # Early Stopping Configuration
+  early_stopping:
+    enabled: true        # Enable early stopping
+    patience: 10         # Stop if no improvement for N epochs
+    min_delta: 0.001     # Minimum improvement to count (0.001 = 0.1%)
+    mode: "max"          # 'max' for F1/IoU, 'min' for loss
+    monitor: "val/f1"    # Metric to monitor: "val/f1", "val/iou", or "val/loss"
 
 # Patch cache configuration
 patchify_on_disk:
