@@ -324,17 +324,20 @@ def main():
     data_dir = os.path.expanduser(cfg['data']['data_dir'])
     
     print("Loading datasets...")
-    train_dataset = RawFireDataset(data_dir, sequence_length=cfg['data']['sequence_length'])
+    full_dataset = RawFireDataset(data_dir, sequence_length=cfg['data']['sequence_length'])
     
     # Split into train/val
-    total_samples = len(train_dataset.samples)
+    total_samples = len(full_dataset.samples)
     train_size = int(cfg['split']['train'] * total_samples)
-    val_size = total_samples - train_size
     
-    train_dataset.samples = train_dataset.samples[:train_size]
+    # Create separate datasets with correct sample splits
+    train_dataset = RawFireDataset(data_dir, sequence_length=cfg['data']['sequence_length'])
+    train_dataset.samples = full_dataset.samples[:train_size]
+    
     val_dataset = RawFireDataset(data_dir, sequence_length=cfg['data']['sequence_length'])
-    val_dataset.samples = train_dataset.samples[train_size:]
+    val_dataset.samples = full_dataset.samples[train_size:]
     
+    print(f"  Total: {total_samples} samples")
     print(f"  Train: {len(train_dataset.samples)} samples")
     print(f"  Val: {len(val_dataset.samples)} samples\n")
     
@@ -368,10 +371,10 @@ def main():
     # Determine if we should freeze DINO based on phase
     if args.phase == 1:
         freeze_dino = cfg['model']['dino']['freeze_fire']
-        lr = cfg['train']['lr']
+        lr = float(cfg['train']['lr'])
     else:
         freeze_dino = False
-        lr = cfg['train'].get('finetune', {}).get('lr', 1e-5)
+        lr = float(cfg['train'].get('finetune', {}).get('lr', 1e-5))
     
     model = EmberFormerDINO(
         dino_model=cfg['model']['dino']['model_name'],
@@ -399,7 +402,7 @@ def main():
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr=lr,
-        weight_decay=cfg['train']['weight_decay']
+        weight_decay=float(cfg['train']['weight_decay'])
     )
     
     # Create loss function
