@@ -21,7 +21,7 @@ def collate_tokens_temporal(batch):
             valid:     [B, N]
             valid_t:   [B, T_max] (temporal validity: True=real, False=pad)
             meta:      [B, 2] or list of [2] tensors
-        y_batch: [B, N]
+        y_batch: [B, 1, H, W] full-resolution pixel targets
     """
     X_list, y_list = zip(*batch)
     B = len(X_list)
@@ -31,6 +31,7 @@ def collate_tokens_temporal(batch):
     
     # Get dimensions from first sample
     N, Cs = X_list[0]["static"].shape
+    _, H, W = y_list[0].shape  # Full-resolution targets: [1, H, W]
     
     # Infer dtype/device from first sample
     static_dtype, static_device = X_list[0]["static"].dtype, X_list[0]["static"].device
@@ -44,9 +45,12 @@ def collate_tokens_temporal(batch):
     wind_hist_batch = torch.zeros((B, T_max, 2), dtype=wind_dtype, device=wind_device)
     valid_batch = torch.empty((B, N), dtype=valid_dtype, device=valid_device)
     valid_t_batch = torch.zeros((B, T_max), dtype=torch.bool, device=fire_device)
-    y_batch = torch.empty((B, N), dtype=y_list[0].dtype, device=y_list[0].device)
+    y_batch = torch.empty((B, 1, H, W), dtype=y_list[0].dtype, device=y_list[0].device)  # Full-res targets
     
     meta_list = []
+    seq_ids = []
+    t_lasts = []
+    t_nexts = []
     
     for i, (X, y) in enumerate(batch):
         T_hist_i = X["fire_hist"].shape[0]
@@ -60,6 +64,11 @@ def collate_tokens_temporal(batch):
         valid_batch[i] = X["valid"]
         y_batch[i] = y
         meta_list.append(X["meta"])
+        
+        # Collect sequence/frame IDs for raw image loading
+        seq_ids.append(X.get("seq_id", 0))
+        t_lasts.append(X.get("t_last", 0))
+        t_nexts.append(X.get("t_next", 0))
     
     X_batch = {
         "static": static_batch,
@@ -68,6 +77,9 @@ def collate_tokens_temporal(batch):
         "valid": valid_batch,
         "valid_t": valid_t_batch,
         "meta": meta_list,  # Keep as list, or stack if needed
+        "seq_ids": seq_ids,
+        "t_lasts": t_lasts,
+        "t_nexts": t_nexts,
     }
     
     return X_batch, y_batch

@@ -1,0 +1,42 @@
+@@
+-        static = np.load(os.path.join(seq_path, meta["static_tokens"]), mmap_mode="r")  # [N,Cs]
+-        valid  = np.load(os.path.join(seq_path, meta["valid_tokens"]),  mmap_mode="r")  # [N]
+-        wind   = np.load(os.path.join(seq_path, meta["wind"]),          mmap_mode="r")  # [T,2]
++        static = np.load(os.path.join(seq_path, meta["static_tokens"]), mmap_mode="r")  # [N,Cs]
++        valid  = np.load(os.path.join(seq_path, meta["valid_tokens"]),  mmap_mode="r")  # [N]
++        wind   = np.load(os.path.join(seq_path, meta["wind"]),          mmap_mode="r")  # [T,2]
+@@
+-        fire_last = None
++        fire_last = None
+         if "fire_tokens" in meta:
+             ft = np.load(os.path.join(seq_path, meta["fire_tokens"]), mmap_mode="r")    # [T,N]
+             fire_last = ft[t_last]
+         else:
+             # OLD format fallback
+             fire_last = np.load(os.path.join(seq_path, meta["fires"][str(t_last)]))     # [N]
+@@
+-        X = {
+-            "static": torch.from_numpy(np.asarray(static)).float().clone(),          # [N,Cs]
+-            "fire_last": torch.from_numpy(np.asarray(fire_last)).float().clone(),    # [N]
+-            "wind_last": torch.from_numpy(np.asarray(wind[t_last])).float().clone(), # [2]
+-            "valid": torch.from_numpy(np.asarray(valid)).bool().clone(),             # [N]
+-            "meta": meta,
+-        }
++        # make writable BEFORE torch.from_numpy() to avoid the warning
++        static_np = np.asarray(static).copy()
++        fire_np   = np.asarray(fire_last).copy()
++        wind_np   = np.asarray(wind[t_last]).copy()
++        valid_np  = np.asarray(valid).copy()
++
++        # minimal, consistent meta for collation
++        gH = meta.get("Gy") or meta.get("grid_h")
++        gW = meta.get("Gx") or meta.get("grid_w")
++
++        X = {
++            "static":    torch.from_numpy(static_np).float(),   # [N,Cs]
++            "fire_last": torch.from_numpy(fire_np).float(),     # [N]
++            "wind_last": torch.from_numpy(wind_np).float(),     # [2]
++            "valid":     torch.from_numpy(valid_np).bool(),     # [N]
++            "meta":      (int(gH), int(gW)),                   # <- tuple (Gy,Gx)
++        }
+

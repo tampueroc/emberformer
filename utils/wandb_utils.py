@@ -203,9 +203,92 @@ def log_grid_preview(
     B = min(max_images, probs.size(0))
     images = []
     for i in range(B):
-        up_p = F.interpolate(probs[i:i+1], size=(size, size), mode="nearest")[0, 0]
-        up_y = F.interpolate(target[i:i+1], size=(size, size), mode="nearest")[0, 0]
+        # Use bilinear interpolation for smooth visualization (was blocky with nearest)
+        up_p = F.interpolate(probs[i:i+1], size=(size, size), mode="bilinear", align_corners=False)[0, 0]
+        up_y = F.interpolate(target[i:i+1], size=(size, size), mode="bilinear", align_corners=False)[0, 0]
         images.append(wandb.Image((up_p.numpy() * 255).astype("uint8"), caption=f"pred[{i}]"))
         images.append(wandb.Image((up_y.numpy() * 255).astype("uint8"), caption=f"target[{i}]"))
+    run.log({key: images})
+
+def log_emberformer_preview(
+    run,
+    probs_pix: torch.Tensor,   # [B, 1, H, W] pixel-level probabilities
+    target_pix: torch.Tensor,  # [B, 1, H, W] pixel-level targets (from patches, low quality)
+    fire_hist: torch.Tensor,   # [B, N, T] fire history tokens
+    seq_ids: list,             # List of sequence IDs
+    t_lasts: list,             # List of last frame indices
+    t_nexts: list,             # List of next frame indices (targets)
+    raw_root: str,             # Path to raw data directory
+    grid_shape: tuple,         # (Gy, Gx)
+    patch_size: int,           # patch size for visualization
+    fire_value: int = 231,     # Fire pixel value in isochrones
+    *,
+    key: str = "val/preview",
+    max_images: int = 2,
+    size: int = 400,
+):
+    """
+    W&B preview for EmberFormer with context.
+    Shows: prediction, target (loaded from raw), and last fire frame (loaded from raw).
+    Loads actual full-resolution images instead of reconstructing from patches.
+    """
+    if run is None:
+        return
+    wandb = _maybe_import_wandb()
+    if wandb is None:
+        return
+    
+    import os
+    from torchvision.io import read_image
+    
+    probs_pix = probs_pix.detach().cpu()
+    
+    B = min(max_images, probs_pix.size(0))
+    
+    images = []
+    for i in range(B):
+        # Prediction (already at pixel resolution from RefinementDecoder)
+        pred_img = F.interpolate(probs_pix[i:i+1], size=(size, size), mode="bilinear", align_corners=False)[0, 0]
+        
+        # Load raw target image from isochrones directory
+        seq_id = seq_ids[i]
+        t_next = t_nexts[i]
+        iso_dir = os.path.join(raw_root, "isochrones", f"sequence_{seq_id:03d}")
+        try:
+            iso_files = sorted(f for f in os.listdir(iso_dir) if f.endswith(".png"))
+            target_raw = read_image(os.path.join(iso_dir, iso_files[t_next]))  # [3,H,W]
+            target_fire = (target_raw[1] == fire_value).float()  # Green channel, fire=231
+            target_img = F.interpolate(target_fire.unsqueeze(0).unsqueeze(0), size=(size, size), 
+                                       mode="bilinear", align_corners=False)[0, 0]
+        except Exception as e:
+            print(f"Warning: Could not load target for seq {seq_id}, frame {t_next}: {e}")
+            # Fallback to patch reconstruction
+            target_img = F.interpolate(target_pix[i:i+1], size=(size, size), mode="bilinear", align_corners=False)[0, 0]
+            target_img = (target_img > 0.05).float()
+        
+        # Load raw last fire frame from fire_frames directory
+        t_last = t_lasts[i]
+        fire_dir = os.path.join(raw_root, "fire_frames", f"sequence_{seq_id:03d}")
+        try:
+            fire_files = sorted(f for f in os.listdir(fire_dir) if f.endswith(".png"))
+            fire_raw = read_image(os.path.join(fire_dir, fire_files[t_last]))  # [3,H,W]
+            last_fire = (fire_raw[1] == fire_value).float()  # Green channel, fire=231
+            last_fire_img = F.interpolate(last_fire.unsqueeze(0).unsqueeze(0), size=(size, size),
+                                          mode="bilinear", align_corners=False)[0, 0]
+        except Exception as e:
+            print(f"Warning: Could not load fire frame for seq {seq_id}, frame {t_last}: {e}")
+            # Fallback to patch reconstruction
+            last_fire_tokens = fire_hist[i, :, -1]
+            Gy, Gx = grid_shape
+            last_fire_grid = last_fire_tokens.reshape(1, Gy, Gx).unsqueeze(0)
+            last_fire_pix = F.interpolate(last_fire_grid, scale_factor=patch_size, mode="nearest")[0, 0]
+            last_fire_img = F.interpolate(last_fire_pix.unsqueeze(0).unsqueeze(0), size=(size, size),
+                                          mode="bilinear", align_corners=False)[0, 0]
+            last_fire_img = (last_fire_img > 0.05).float()
+        
+        images.append(wandb.Image((pred_img.numpy() * 255).astype("uint8"), caption=f"pred[{i}]"))
+        images.append(wandb.Image((target_img.numpy() * 255).astype("uint8"), caption=f"target[{i}]"))
+        images.append(wandb.Image((last_fire_img.numpy() * 255).astype("uint8"), caption=f"last_fire[{i}]"))
+    
     run.log({key: images})
 

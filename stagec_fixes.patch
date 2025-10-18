@@ -1,0 +1,130 @@
+diff --git a/emberformer/data/dataset_tokens.py b/emberformer/data/dataset_tokens.py
+index 6b4c5aa..0000000 100644
+--- a/emberformer/data/dataset_tokens.py
++++ b/emberformer/data/dataset_tokens.py
+@@ -1,6 +1,7 @@
+ import json, os
+ import numpy as np
+ import torch
+ import torch.nn.functional as F
+ from torchvision.io import read_image
+@@
+     def __getitem__(self, i):
+         seq_dir, t_last = self.samples[i]
+         seq_path = os.path.join(self.cache_dir, seq_dir)
+         meta = json.load(open(os.path.join(seq_path, "meta.json")))
+
+-        static = np.load(os.path.join(seq_path, meta["static_tokens"]), mmap_mode="r")  # [N,Cs]
+-        valid  = np.load(os.path.join(seq_path, meta["valid_tokens"]),  mmap_mode="r")  # [N]
+-        wind   = np.load(os.path.join(seq_path, meta["wind"]),          mmap_mode="r")  # [T,2]
++        static = np.load(os.path.join(seq_path, meta["static_tokens"]), mmap_mode="r")  # [N,Cs]
++        valid  = np.load(os.path.join(seq_path, meta["valid_tokens"]),  mmap_mode="r")  # [N]
++        wind   = np.load(os.path.join(seq_path, meta["wind"]),          mmap_mode="r")  # [T,2]
+@@
+-        fire_last = None
++        fire_last = None
+         if "fire_tokens" in meta:
+             ft = np.load(os.path.join(seq_path, meta["fire_tokens"]), mmap_mode="r")    # [T,N]
+             fire_last = ft[t_last]
+         else:
+             # OLD format fallback
+             fire_last = np.load(os.path.join(seq_path, meta["fires"][str(t_last)]))     # [N]
+@@
+-        t_next = t_last + 1
+-        seq_id_int = int(meta["sequence_id"])
+-        P = int(meta["patch_size"])
+-        y_patch = self._target_patch_avg(seq_id_int, t_next, P)
+-
+-        X = {
+-            "static": torch.from_numpy(np.asarray(static)).float().clone(),          # [N,Cs]
+-            "fire_last": torch.from_numpy(np.asarray(fire_last)).float().clone(),    # [N]
+-            "wind_last": torch.from_numpy(np.asarray(wind[t_last])).float().clone(), # [2]
+-            "valid": torch.from_numpy(np.asarray(valid)).bool().clone(),             # [N]
+-            "meta": meta,
+-        }
+-        y = y_patch.float()                                                  # [N]
+-        return X, y
++        t_next = t_last + 1
++        seq_id_int = int(meta["sequence_id"])
++        P = int(meta["patch_size"])
++        y_patch = self._target_patch_avg(seq_id_int, t_next, P)
++
++        # Make writable copies before torch.from_numpy() to avoid warnings
++        static_np = np.asarray(static).copy()
++        fire_np   = np.asarray(fire_last).copy()
++        wind_np   = np.asarray(wind[t_last]).copy()
++        valid_np  = np.asarray(valid).copy()
++
++        # Minimal, collatable meta as a (Gy, Gx) tuple
++        gH = meta.get("Gy") or meta.get("grid_h")
++        gW = meta.get("Gx") or meta.get("grid_w")
++
++        X = {
++            "static":    torch.from_numpy(static_np).float(),   # [N,Cs]
++            "fire_last": torch.from_numpy(fire_np).float(),     # [N]
++            "wind_last": torch.from_numpy(wind_np).float(),     # [2]
++            "valid":     torch.from_numpy(valid_np).bool(),     # [N]
++            "meta":      (int(gH), int(gW)),
++        }
++        y = y_patch.float()                                                  # [N]
++        return X, y
+diff --git a/emberformer/scripts/train_stage_c_tokens.py b/emberformer/scripts/train_stage_c_tokens.py
+index 2c9d7a1..0000000 100644
+--- a/emberformer/scripts/train_stage_c_tokens.py
++++ b/emberformer/scripts/train_stage_c_tokens.py
+@@ -1,7 +1,7 @@
+-import os, time, argparse, yaml, pathlib, json, random
++import os, time, argparse, yaml, pathlib, json, random
+ from collections import defaultdict
+-from torch.cuda.amp import autocast, GradScaler
++from torch import amp
+ import torch
+ import torch.nn as nn
+ import torch.nn.functional as F
+ from torch.utils.data import DataLoader
+ import torchmetrics
+@@
+ def _prep_batch(batch):
+     X, y = batch
+     static = X["static"]      # [B,N,Cs]
+     fire   = X["fire_last"]   # [B,N]
+     wind   = X["wind_last"]   # [B,2]
+     valid  = X["valid"]       # [B,N]
+-    metas  = X["meta"]
++    metas  = X["meta"]        # list of (Gy, Gx) tuples
+
+     B, N, Cs = static.shape
+-    gH = metas[0].get("Gy") or metas[0].get("grid_h")
+-    gW = metas[0].get("Gx") or metas[0].get("grid_w")
++    gH, gW = metas[0]
+     assert gH * gW == N, f"N={N} != Gy*Gx={gH*gW}"
+@@
+ def main():
+@@
+-    scaler = GradScaler(enabled=(device.type == "cuda"))
++    scaler = amp.GradScaler('cuda', enabled=(device.type == "cuda"))
+@@
+     if run:
+         define_common_metrics()
+-        run.summary.update({
++        gh0, gw0 = X0["meta"]
++        run.summary.update({
+             "dataset_size": len(ds),
+-            "grid_h": X0["meta"].get("Gy") or X0["meta"].get("grid_h"),
+-            "grid_w": X0["meta"].get("Gx") or X0["meta"].get("grid_w"),
++            "grid_h": gh0,
++            "grid_w": gw0,
+             "in_channels": in_ch,
+             "stage": "C",
+             "model_name": "UNetS",
+@@
+-            with autocast(enabled=(device.type == "cuda")):
++            with amp.autocast('cuda', enabled=(device.type == "cuda")):
+                 logits = model(x_in)
+                 loss = _masked_bce(logits, y_map, mask)
+@@
+-                with autocast(enabled=(device.type == "cuda")):
++                with amp.autocast('cuda', enabled=(device.type == "cuda")):
+                     logits = model(x_in)
+                     vloss = _masked_bce(logits, y_map, mask)
+

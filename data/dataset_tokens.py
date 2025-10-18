@@ -48,6 +48,7 @@ class TokenFireDataset(torch.utils.data.Dataset):
     def __len__(self): return len(self.samples)
 
     def _target_patch_avg(self, seq_id_int: int, t_next: int, P: int):
+        """DEPRECATED: Returns patch averages. Use _target_full_res for pixel-level targets."""
         iso_dir = os.path.join(self.raw_root, "isochrones", f"sequence_{seq_id_int:03d}")
         iso_files = sorted(f for f in os.listdir(iso_dir) if f.endswith(".png"))
         img = read_image(os.path.join(iso_dir, iso_files[t_next]))  # [3,h,w]
@@ -57,6 +58,14 @@ class TokenFireDataset(torch.utils.data.Dataset):
         iso_pad = F.pad(iso.unsqueeze(0), (0,pad_w,0,pad_h), mode="constant", value=0.0).squeeze(0)
         grid = F.avg_pool2d(iso_pad, kernel_size=P, stride=P)        # [1,Gy,Gx]
         return grid.view(-1)                                         # [N]
+    
+    def _target_full_res(self, seq_id_int: int, t_next: int):
+        """Load full-resolution target image for pixel-level training."""
+        iso_dir = os.path.join(self.raw_root, "isochrones", f"sequence_{seq_id_int:03d}")
+        iso_files = sorted(f for f in os.listdir(iso_dir) if f.endswith(".png"))
+        img = read_image(os.path.join(iso_dir, iso_files[t_next]))  # [3,H,W]
+        iso = (img[1] == self.fire_value).float().unsqueeze(0)      # [1,H,W]
+        return iso
 
     def __getitem__(self, i):
         seq_dir, t_last = self.samples[i]
@@ -70,7 +79,9 @@ class TokenFireDataset(torch.utils.data.Dataset):
         t_next = t_last + 1
         seq_id_int = int(meta["sequence_id"])
         P = int(meta["patch_size"])
-        y_patch = self._target_patch_avg(seq_id_int, t_next, P)
+        
+        # Load full-resolution target for pixel-level training
+        y_full = self._target_full_res(seq_id_int, t_next)  # [1, H, W]
 
         static_np = np.asarray(static).copy()
         valid_np  = np.asarray(valid).copy()
@@ -99,6 +110,10 @@ class TokenFireDataset(torch.utils.data.Dataset):
                 "wind_hist": torch.from_numpy(wind_hist.copy()).float(), # [T_hist,2]
                 "valid":     torch.from_numpy(valid_np).bool(),          # [N]
                 "meta":      grid_hw,
+                "seq_id":    seq_id_int,                                 # For loading raw images
+                "t_last":    t_last,                                     # Frame index
+                "t_next":    t_next,                                     # Target frame index
+                "patch_size": P,                                         # For proper unpatchification
             }
         else:
             # Backward compatibility: return only last frame
@@ -120,6 +135,6 @@ class TokenFireDataset(torch.utils.data.Dataset):
                 "meta":      grid_hw,
             }
 
-        y = y_patch.float()                                                  # [N]
+        y = y_full  # [1, H, W] full resolution
         return X, y
 
