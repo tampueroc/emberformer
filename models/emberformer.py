@@ -251,6 +251,66 @@ class SpatialDecoderUNet(nn.Module):
         return self.outc(u1)
 
 
+class RefinementDecoder(nn.Module):
+    """
+    Learned upsampling decoder for pixel-precise predictions.
+    
+    Takes coarse grid features and progressively upsamples to pixel resolution.
+    Uses transposed convolutions with skip connections for detail preservation.
+    
+    Args:
+        d_model: input feature dimension from spatial decoder
+        patch_size: upsampling factor (e.g., 8 or 16)
+        base_channels: base channel count for decoder layers
+    """
+    def __init__(self, d_model: int, patch_size: int = 8, base_channels: int = 32):
+        super().__init__()
+        self.patch_size = patch_size
+        
+        # Calculate number of upsampling stages (log2 of patch_size)
+        import math
+        num_stages = int(math.log2(patch_size))
+        assert 2 ** num_stages == patch_size, f"patch_size must be power of 2, got {patch_size}"
+        
+        # Progressive upsampling with residual blocks
+        layers = []
+        in_ch = d_model
+        out_ch = base_channels * 4
+        
+        for i in range(num_stages):
+            # Transposed conv for 2× upsampling
+            layers.append(nn.ConvTranspose2d(
+                in_ch, out_ch, 
+                kernel_size=4, stride=2, padding=1, bias=False
+            ))
+            layers.append(nn.BatchNorm2d(out_ch))
+            layers.append(nn.ReLU(inplace=True))
+            
+            # Refinement conv to reduce artifacts
+            layers.append(nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False))
+            layers.append(nn.BatchNorm2d(out_ch))
+            layers.append(nn.ReLU(inplace=True))
+            
+            in_ch = out_ch
+            out_ch = max(base_channels, out_ch // 2)  # Reduce channels each stage
+        
+        self.upsample_layers = nn.Sequential(*layers)
+        
+        # Final 1×1 conv to prediction
+        self.output_conv = nn.Conv2d(in_ch, 1, kernel_size=1)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: [B, d_model, Gy, Gx] coarse features
+        Returns:
+            logits: [B, 1, H, W] where H=Gy*patch_size, W=Gx*patch_size
+        """
+        x = self.upsample_layers(x)
+        logits = self.output_conv(x)
+        return logits
+
+
 class SpatialDecoderSegFormer(nn.Module):
     """
     SegFormer-based spatial decoder
@@ -439,6 +499,13 @@ class EmberFormer(nn.Module):
             )
         else:
             raise ValueError(f"Unknown spatial decoder: {spatial_decoder}")
+        
+        # Refinement decoder for pixel-precise predictions
+        self.refinement_decoder = RefinementDecoder(
+            d_model=d_model,
+            patch_size=patch_size,
+            base_channels=spatial_base_channels
+        )
     
     def unfreeze_decoder(self):
         """Unfreeze spatial decoder for fine-tuning (if using SegFormer)"""
@@ -485,19 +552,24 @@ class EmberFormer(nn.Module):
         grid_shape: tuple[int, int],
     ) -> torch.Tensor:
         """
-        Forward pass with unpatchification to pixel space
+        Forward pass with learned upsampling to pixel space
         
         Returns:
             logits_pixels: [B, 1, H, W]
         """
-        # Get patch-level logits
-        logits_grid = self.forward(fire_hist, wind_hist, static, valid_t, grid_shape)
+        B, N, T = fire_hist.shape
+        Gy, Gx = grid_shape
         
-        # Unpatchify to pixel space (nearest neighbor upsample)
-        logits_pixels = F.interpolate(
-            logits_grid,
-            scale_factor=self.patch_size,
-            mode='nearest'
-        )
+        # 1. Embed tokens: [B, N, T, d]
+        tokens = self.token_embedder(fire_hist, wind_hist, static)
+        
+        # 2. Temporal transformer: [B, N, d]
+        patch_features = self.temporal_transformer(tokens, valid_t)
+        
+        # 3. Reshape to spatial grid: [B, d, Gy, Gx]
+        features_grid = patch_features.permute(0, 2, 1).reshape(B, self.d_model, Gy, Gx)
+        
+        # 4. Refinement decoder: learned upsampling to [B, 1, H, W]
+        logits_pixels = self.refinement_decoder(features_grid)
         
         return logits_pixels

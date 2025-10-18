@@ -203,8 +203,9 @@ def log_grid_preview(
     B = min(max_images, probs.size(0))
     images = []
     for i in range(B):
-        up_p = F.interpolate(probs[i:i+1], size=(size, size), mode="nearest")[0, 0]
-        up_y = F.interpolate(target[i:i+1], size=(size, size), mode="nearest")[0, 0]
+        # Use bilinear interpolation for smooth visualization (was blocky with nearest)
+        up_p = F.interpolate(probs[i:i+1], size=(size, size), mode="bilinear", align_corners=False)[0, 0]
+        up_y = F.interpolate(target[i:i+1], size=(size, size), mode="bilinear", align_corners=False)[0, 0]
         images.append(wandb.Image((up_p.numpy() * 255).astype("uint8"), caption=f"pred[{i}]"))
         images.append(wandb.Image((up_y.numpy() * 255).astype("uint8"), caption=f"target[{i}]"))
     run.log({key: images})
