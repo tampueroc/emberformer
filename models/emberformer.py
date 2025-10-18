@@ -935,6 +935,15 @@ class EmberFormerDINO(nn.Module):
         pixel_logits = self.refinement_decoder(
             grid_features,
             patch_logits
-        )  # [B, 1, H, W]
+        )  # [B, 1, H_out, W_out]
+        
+        # Resize to match input size (DINO patch size may create different dims)
+        if pixel_logits.shape[-2:] != (H, W):
+            pixel_logits = F.interpolate(
+                pixel_logits,
+                size=(H, W),
+                mode='bilinear',
+                align_corners=False
+            )
         
         return pixel_logits
