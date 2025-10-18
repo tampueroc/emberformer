@@ -97,8 +97,9 @@ train:
 
   # Phase 1: Frozen DINO
   epochs: 30             # Phase 1 training epochs
-  lr: 1e-3               # Learning rate for trainable components
+  lr: 1e-4               # Learning rate for trainable components (reduced from 1e-3)
   weight_decay: 1e-4
+  grad_clip_norm: 1.0    # Gradient clipping to prevent explosion
 
   # Phase 2: Fine-tune DINO (optional, run separately)
   finetune:

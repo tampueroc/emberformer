@@ -306,6 +306,12 @@ def train_one_epoch(model, loader, optimizer, scaler, metrics, device, cfg, epoc
 
         # Backward pass
         scaler.scale(loss).backward()
+        
+        # Gradient clipping
+        if 'grad_clip_norm' in cfg['train']:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg['train']['grad_clip_norm'])
+        
         scaler.step(optimizer)
         scaler.update()
 
