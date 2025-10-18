@@ -1,0 +1,85 @@
+# Quick test config for pipeline validation
+# Run: uv run python scripts/train_emberformer.py --config configs/emberformer_test.yaml --gpu 0
+
+global:
+  seed: 42
+  cudnn_benchmark: true
+
+wandb:
+  enabled: true
+  project: "emberformer"
+  entity: "tampueroc"
+  tags: ["test", "pipeline-check", "refinement-decoder"]
+  log_artifacts: false  # Skip artifacts for test
+  preview_size: 400
+  max_preview_images: 2
+
+data:
+  data_dir: "/home/tampuero/data/emberformer"
+  cache_root: "/home/tampuero/data/emberformer/patch_cache"
+  sequence_length: 8
+  patch_size: 8
+  max_sequences: 500  # LIMIT: Only use 500 sequences for quick test
+
+patchify_on_disk:
+  enabled: true
+  grid_size: [50, 50]
+  recompute: false
+
+split:
+  train: 0.8
+  val: 0.1
+  test: 0.1
+  seed: 42
+
+model:
+  temporal_transformer:
+    d_model: 64
+    nhead: 4
+    num_layers: 3
+    dim_feedforward: 256
+    dropout: 0.1
+    use_wind: true
+    use_static: true
+    max_seq_len: 32
+
+  spatial_decoder:
+    type: "segformer"
+    pretrained: true
+    model_name: "nvidia/segformer-b0-finetuned-ade-512-512"
+    freeze_epochs: 5
+    base_channels: 48
+
+  metrics:
+    pred_thresh: 0.5
+    target_thresh: 0.05
+    pos_weight: "auto"
+  
+  loss:
+    type: "focal_tversky"  # Test the new loss
+    
+    use_dice: true
+    bce_weight: 0.9
+    dice_weight: 0.1
+    
+    focal_weight: 0.7
+    tversky_weight: 0.3
+    focal_alpha: 0.25
+    focal_gamma: 2.0
+    tversky_alpha: 0.7
+    tversky_beta: 0.3
+
+train:
+  epochs: 3              # QUICK: Only 3 epochs for test
+  batch_size: 2          # SMALL: Reduce memory usage
+  lr_temporal: 1e-3
+  lr_spatial: 1e-4
+  weight_decay: 1e-4
+  log_images_every: 1
+  log_metrics_every: 10  # Log more frequently for debugging
+  
+  save_checkpoints: true
+  checkpoint_dir: "checkpoints"
+  
+  early_stopping:
+    enabled: false       # DISABLED: Let it run all 3 epochs
