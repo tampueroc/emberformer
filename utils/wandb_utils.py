@@ -210,3 +210,51 @@ def log_grid_preview(
         images.append(wandb.Image((up_y.numpy() * 255).astype("uint8"), caption=f"target[{i}]"))
     run.log({key: images})
 
+def log_emberformer_preview(
+    run,
+    probs_pix: torch.Tensor,   # [B, 1, H, W] pixel-level probabilities
+    target_pix: torch.Tensor,  # [B, 1, H, W] pixel-level targets
+    fire_hist: torch.Tensor,   # [B, N, T] fire history tokens
+    grid_shape: tuple,         # (Gy, Gx)
+    patch_size: int,           # patch size for visualization
+    *,
+    key: str = "val/preview",
+    max_images: int = 2,
+    size: int = 400,
+):
+    """
+    W&B preview for EmberFormer with context.
+    Shows: prediction, target, and last fire frame for context.
+    """
+    if run is None:
+        return
+    wandb = _maybe_import_wandb()
+    if wandb is None:
+        return
+    
+    probs_pix = probs_pix.detach().cpu()
+    target_pix = target_pix.detach().cpu()
+    fire_hist = fire_hist.detach().cpu()
+    
+    B = min(max_images, probs_pix.size(0))
+    Gy, Gx = grid_shape
+    
+    images = []
+    for i in range(B):
+        # Prediction and target (already at pixel resolution)
+        pred_img = F.interpolate(probs_pix[i:i+1], size=(size, size), mode="bilinear", align_corners=False)[0, 0]
+        target_img = F.interpolate(target_pix[i:i+1], size=(size, size), mode="bilinear", align_corners=False)[0, 0]
+        
+        # Last fire frame: reconstruct from tokens [N, T] -> [1, Gy, Gx] -> [1, H, W]
+        last_fire_tokens = fire_hist[i, :, -1]  # [N] last timestep
+        last_fire_grid = last_fire_tokens.reshape(1, Gy, Gx).unsqueeze(0)  # [1, 1, Gy, Gx]
+        last_fire_pix = F.interpolate(last_fire_grid, scale_factor=patch_size, mode="nearest")[0, 0]
+        last_fire_img = F.interpolate(last_fire_pix.unsqueeze(0).unsqueeze(0), size=(size, size), 
+                                      mode="bilinear", align_corners=False)[0, 0]
+        
+        images.append(wandb.Image((pred_img.numpy() * 255).astype("uint8"), caption=f"pred[{i}]"))
+        images.append(wandb.Image((target_img.numpy() * 255).astype("uint8"), caption=f"target[{i}]"))
+        images.append(wandb.Image((last_fire_img.numpy() * 255).astype("uint8"), caption=f"last_fire[{i}]"))
+    
+    run.log({key: images})
+

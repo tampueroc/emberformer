@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from data import TokenFireDataset, collate_tokens_temporal
 from models import EmberFormer
-from utils import init_wandb, define_common_metrics, save_artifact, log_grid_preview
+from utils import init_wandb, define_common_metrics, save_artifact, log_emberformer_preview
 
 # ----------------
 # Early Stopping
@@ -553,13 +553,12 @@ def main():
             
             opt.zero_grad(set_to_none=True)
             with amp.autocast('cuda', enabled=(device.type == "cuda")):
-                # Forward: get patch-level logits [B, 1, Gy, Gx]
-                logits_grid = model(
+                # Forward: pixel-level predictions with learned upsampling [B, 1, H, W]
+                logits_pix = model.forward_pixels(
                     fire_hist, wind_hist, static, valid_t, grid_shape=(gH, gW)
                 )
                 
-                # Unpatchify to pixel space
-                logits_pix = F.interpolate(logits_grid, scale_factor=P, mode="nearest")
+                # Prepare targets and mask at pixel resolution
                 y_map = y_batch.view(-1, 1, gH, gW)
                 y_pix = F.interpolate(y_map, scale_factor=P, mode="nearest")
                 mask = valid.view(-1, 1, gH, gW)
@@ -680,10 +679,12 @@ def main():
                 gH, gW = _extract_grid_hw(X_batch["meta"])
                 
                 with amp.autocast('cuda', enabled=(device.type == "cuda")):
-                    logits_grid = model(
+                    # Forward: pixel-level predictions with learned upsampling [B, 1, H, W]
+                    logits_pix = model.forward_pixels(
                         fire_hist, wind_hist, static, valid_t, grid_shape=(gH, gW)
                     )
-                    logits_pix = F.interpolate(logits_grid, scale_factor=P, mode="nearest")
+                    
+                    # Prepare targets and mask at pixel resolution
                     y_map = y_batch.view(-1, 1, gH, gW)
                     y_pix = F.interpolate(y_map, scale_factor=P, mode="nearest")
                     mask = valid.view(-1, 1, gH, gW)
@@ -726,9 +727,16 @@ def main():
 
                 # Log validation preview (first batch only, every epoch)
                 if run and (not logged_preview):
-                    log_grid_preview(
-                        run, probs_pix[:max_preview_images], y_pix[:max_preview_images], 
-                        key="val/preview", max_images=max_preview_images, size=preview_size
+                    log_emberformer_preview(
+                        run, 
+                        probs_pix[:max_preview_images], 
+                        y_pix[:max_preview_images],
+                        fire_hist[:max_preview_images],
+                        grid_shape=(gH, gW),
+                        patch_size=P,
+                        key="val/preview", 
+                        max_images=max_preview_images, 
+                        size=preview_size
                     )
                     logged_preview = True
 
