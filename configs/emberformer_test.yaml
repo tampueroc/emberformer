@@ -15,13 +15,13 @@ wandb:
   max_preview_images: 2
 
 data:
-  data_dir: "/home/tampuero/data/emberformer"
+  data_dir: "/home/tampuero/data/deep_crown_dataset/organized_spreads"
   sequence_length: 8
   max_sequences: 500  # LIMIT: Only use 500 sequences for quick test
 
 patchify_on_disk:
   enabled: true
-  cache_dir: "/home/tampuero/data/emberformer/patch_cache"
+  cache_dir: "/home/tampuero/data/deep_crown_dataset/organized_spreads/patch_cache"
   patch_size: 8
   stride: 8
   pad_mode: "strict"
