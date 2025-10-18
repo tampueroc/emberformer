@@ -30,7 +30,7 @@ wandb:
   run_name:
   run_name_template: "{script}-{model}-lr{lr}-{time}"
   
-  tags: []
+  tags: ["bce-dice", "refinement-decoder", "pixel-targets", "baseline"]
   auto_tags: true
   
   log_batch_preview: false
@@ -86,7 +86,9 @@ model:
     tversky_beta: 0.3      # Tversky: FN penalty (<0.5 reduces recall penalty)
 
 train:
+  model: "emberformer-bce-dice"  # Model name for W&B tracking
   epochs: 20             # Max epochs (early stopping may end sooner at ~10-15)
+  lr: 1e-3               # Learning rate (for run naming)
   lr_temporal: 1e-3      # Learning rate for temporal components
   lr_spatial: 1e-4       # Learning rate for spatial decoder (lower for pre-trained)
   weight_decay: 1e-4

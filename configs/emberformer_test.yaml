@@ -73,8 +73,10 @@ model:
     tversky_beta: 0.3
 
 train:
+  model: "emberformer-test"  # Model name for W&B tracking
   epochs: 3              # QUICK: Only 3 epochs for test
   batch_size: 2          # SMALL: Reduce memory usage
+  lr: 1e-3               # Learning rate (for run naming)
   lr_temporal: 1e-3
   lr_spatial: 1e-4
   weight_decay: 1e-4
