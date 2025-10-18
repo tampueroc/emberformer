@@ -561,34 +561,22 @@ def main():
         traceback.print_exc()
         raise
 
-    # Split into train/val
+    # Split into train/val using Subset to avoid reloading data
+    from torch.utils.data import Subset
+    
     print("  Splitting dataset...")
     total_samples = len(full_dataset.samples)
     train_size = int(cfg['split']['train'] * total_samples)
-
-    try:
-        print("  Creating train dataset...")
-        train_dataset = RawFireDataset(data_dir,
-                                       sequence_length=cfg['data']['sequence_length'],
-                                       transform=transform)
-        train_dataset.samples = full_dataset.samples[:train_size]
-        print(f"    Train dataset created with {len(train_dataset.samples)} samples")
-
-        print("  Creating val dataset...")
-        val_dataset = RawFireDataset(data_dir,
-                                     sequence_length=cfg['data']['sequence_length'],
-                                     transform=transform)
-        val_dataset.samples = full_dataset.samples[train_size:]
-        print(f"    Val dataset created with {len(val_dataset.samples)} samples")
-    except Exception as e:
-        print(f"  ERROR during dataset split: {e}")
-        import traceback
-        traceback.print_exc()
-        raise
+    
+    train_indices = list(range(0, train_size))
+    val_indices = list(range(train_size, total_samples))
+    
+    train_dataset = Subset(full_dataset, train_indices)
+    val_dataset = Subset(full_dataset, val_indices)
 
     print(f"  Total: {total_samples} samples")
-    print(f"  Train: {len(train_dataset.samples)} samples")
-    print(f"  Val: {len(val_dataset.samples)} samples\n")
+    print(f"  Train: {len(train_dataset)} samples")
+    print(f"  Val: {len(val_dataset)} samples\n")
 
     # Create dataloaders
     print("Creating dataloaders...")
