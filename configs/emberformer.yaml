@@ -70,9 +70,9 @@ model:
   
   loss:
     use_dice: true         # Enable Dice loss (optimizes IoU/F1 directly)
-    bce_weight: 0.7        # Weight for BCE component (increased to improve precision)
-    dice_weight: 0.3       # Weight for Dice component (reduced to reduce false positives)
-                           # 0.7/0.3 favors precision over recall
+    bce_weight: 0.9        # Weight for BCE component (heavily favor precision)
+    dice_weight: 0.1       # Weight for Dice component (minimal, just for IoU awareness)
+                           # 0.9/0.1 strongly penalizes false positives via BCE
 
 train:
   epochs: 20             # Max epochs (early stopping may end sooner at ~10-15)

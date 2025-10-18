@@ -255,11 +255,11 @@ class RefinementDecoder(nn.Module):
     """
     Learned upsampling decoder for pixel-precise predictions.
     
-    Takes coarse grid features and progressively upsamples to pixel resolution.
-    Uses transposed convolutions with skip connections for detail preservation.
+    Takes coarse predictions + features and progressively upsamples to pixel resolution.
+    Combines spatial decoder output with features for detail-preserving upsampling.
     
     Args:
-        d_model: input feature dimension from spatial decoder
+        d_model: input feature dimension from temporal transformer
         patch_size: upsampling factor (e.g., 8 or 16)
         base_channels: base channel count for decoder layers
     """
@@ -272,9 +272,12 @@ class RefinementDecoder(nn.Module):
         num_stages = int(math.log2(patch_size))
         assert 2 ** num_stages == patch_size, f"patch_size must be power of 2, got {patch_size}"
         
+        # Input combines coarse prediction (1 ch) + features (d_model ch)
+        self.input_proj = nn.Conv2d(d_model + 1, base_channels * 4, kernel_size=1)
+        
         # Progressive upsampling with residual blocks
         layers = []
-        in_ch = d_model
+        in_ch = base_channels * 4
         out_ch = base_channels * 4
         
         for i in range(num_stages):
@@ -299,13 +302,17 @@ class RefinementDecoder(nn.Module):
         # Final 1×1 conv to prediction
         self.output_conv = nn.Conv2d(in_ch, 1, kernel_size=1)
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, features: torch.Tensor, coarse_pred: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: [B, d_model, Gy, Gx] coarse features
+            features: [B, d_model, Gy, Gx] features from temporal transformer
+            coarse_pred: [B, 1, Gy, Gx] coarse prediction from spatial decoder
         Returns:
             logits: [B, 1, H, W] where H=Gy*patch_size, W=Gx*patch_size
         """
+        # Concatenate coarse prediction with features
+        x = torch.cat([features, coarse_pred], dim=1)  # [B, d_model+1, Gy, Gx]
+        x = self.input_proj(x)
         x = self.upsample_layers(x)
         logits = self.output_conv(x)
         return logits
@@ -569,7 +576,10 @@ class EmberFormer(nn.Module):
         # 3. Reshape to spatial grid: [B, d, Gy, Gx]
         features_grid = patch_features.permute(0, 2, 1).reshape(B, self.d_model, Gy, Gx)
         
-        # 4. Refinement decoder: learned upsampling to [B, 1, H, W]
-        logits_pixels = self.refinement_decoder(features_grid)
+        # 4. Spatial decoder: coarse prediction [B, 1, Gy, Gx]
+        coarse_logits = self.spatial_decoder(features_grid)
+        
+        # 5. Refinement decoder: learned upsampling to [B, 1, H, W]
+        logits_pixels = self.refinement_decoder(features_grid, coarse_logits)
         
         return logits_pixels

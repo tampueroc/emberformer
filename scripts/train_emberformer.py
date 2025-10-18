@@ -149,6 +149,8 @@ def _masked_soft_dice_loss(logits, y, mask, smooth=1.0, ignore_empty=True):
     """
     Soft Dice loss over masked pixels. Optimizes for F1/IoU directly.
     
+    Scaled to match BCE magnitude (~0.1-0.3 range) for balanced weighting.
+    
     Args:
         logits: [B, 1, H, W] raw logits
         y: [B, 1, H, W] targets in [0, 1]
@@ -157,7 +159,7 @@ def _masked_soft_dice_loss(logits, y, mask, smooth=1.0, ignore_empty=True):
         ignore_empty: if True, samples with no positives don't contribute
     
     Returns:
-        scalar Dice loss (1 - Dice coefficient)
+        scalar Dice loss (scaled to ~BCE magnitude)
     """
     p = torch.sigmoid(logits).float()
     y = y.float()
@@ -179,12 +181,17 @@ def _masked_soft_dice_loss(logits, y, mask, smooth=1.0, ignore_empty=True):
         # Only average over samples that have positive pixels
         valid = (y_sum > 0)
         if valid.any():
-            return (1.0 - dice[valid]).mean()
+            dice_loss = (1.0 - dice[valid]).mean()
         else:
             # No positive pixels in batch → return zero loss
             return torch.zeros([], device=logits.device, dtype=logits.dtype)
     else:
-        return (1.0 - dice).mean()
+        dice_loss = (1.0 - dice).mean()
+    
+    # Scale Dice to match BCE magnitude
+    # Dice range: [0, 1], BCE range: ~[0.05, 0.3]
+    # Apply square root to compress high values: sqrt(0.8) = 0.89 → 0.3 is more comparable to BCE
+    return torch.sqrt(dice_loss + 1e-7)
 
 # ----------------
 # Deterministic split helpers
