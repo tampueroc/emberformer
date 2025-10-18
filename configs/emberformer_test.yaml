@@ -8,7 +8,7 @@ global:
 wandb:
   enabled: true
   project: "emberformer"
-  entity: "tampueroc"
+  entity: "tampueroc-university-of-chile-org"
   tags: ["test", "pipeline-check", "refinement-decoder"]
   log_artifacts: false  # Skip artifacts for test
   preview_size: 400
