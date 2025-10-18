@@ -16,13 +16,16 @@ wandb:
 
 data:
   data_dir: "/home/tampuero/data/emberformer"
-  cache_root: "/home/tampuero/data/emberformer/patch_cache"
   sequence_length: 8
-  patch_size: 8
   max_sequences: 500  # LIMIT: Only use 500 sequences for quick test
 
 patchify_on_disk:
   enabled: true
+  cache_dir: "/home/tampuero/data/emberformer/patch_cache"
+  patch_size: 8
+  stride: 8
+  pad_mode: "strict"
+  log_artifact: false
   grid_size: [50, 50]
   recompute: false
 
