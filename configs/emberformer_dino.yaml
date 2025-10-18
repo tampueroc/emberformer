@@ -14,7 +14,7 @@ data:
   pin_memory: true
   drop_last: false
   shuffle: true
-  sequence_length: 6  # Not actively used, kept for compatibility
+  sequence_length: 4  # Maximum history length (most sequences have 3-5 frames)
   use_pixel_data: true  # DINO requires pixel-level inputs, not tokens
   resize_to: 406  # Resize images to 406x406 (divisible by DINO patch size 14, closest to 400)
 
