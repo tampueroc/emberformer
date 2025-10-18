@@ -20,6 +20,7 @@ from tqdm import tqdm
 from data import RawFireDataset
 from models.emberformer import EmberFormerDINO
 from utils import init_wandb, save_artifact
+import torchvision.transforms.functional as TF
 
 # ----------------
 # Early Stopping
@@ -495,17 +496,41 @@ def main():
     # Load datasets
     data_dir = os.path.expanduser(cfg['data']['data_dir'])
     
-    print("Loading datasets...")
-    full_dataset = RawFireDataset(data_dir, sequence_length=cfg['data']['sequence_length'])
+    # DINO preprocessing: resize to compatible size
+    # 448x448 is divisible by DINO patch size (14) -> 32x32 patches
+    # Recommended sizes: 224, 448, 518
+    target_size = cfg['data'].get('resize_to', 448)
+    
+    class ResizeTransform:
+        """Resize images to target size for DINO compatibility"""
+        def __init__(self, size):
+            self.size = size
+        
+        def __call__(self, img):
+            # img: [C, H, W]
+            return TF.resize(img, [self.size, self.size], 
+                           interpolation=TF.InterpolationMode.BILINEAR,
+                           antialias=True)
+    
+    transform = ResizeTransform(target_size)
+    
+    print(f"Loading datasets (resizing to {target_size}x{target_size})...")
+    full_dataset = RawFireDataset(data_dir, 
+                                   sequence_length=cfg['data']['sequence_length'],
+                                   transform=transform)
     
     # Split into train/val
     total_samples = len(full_dataset.samples)
     train_size = int(cfg['split']['train'] * total_samples)
     
-    train_dataset = RawFireDataset(data_dir, sequence_length=cfg['data']['sequence_length'])
+    train_dataset = RawFireDataset(data_dir, 
+                                   sequence_length=cfg['data']['sequence_length'],
+                                   transform=transform)
     train_dataset.samples = full_dataset.samples[:train_size]
     
-    val_dataset = RawFireDataset(data_dir, sequence_length=cfg['data']['sequence_length'])
+    val_dataset = RawFireDataset(data_dir, 
+                                 sequence_length=cfg['data']['sequence_length'],
+                                 transform=transform)
     val_dataset.samples = full_dataset.samples[train_size:]
     
     print(f"  Total: {total_samples} samples")

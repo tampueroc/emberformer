@@ -16,6 +16,7 @@ data:
   shuffle: true
   sequence_length: 3  # Not actively used, kept for compatibility
   use_pixel_data: true  # DINO requires pixel-level inputs, not tokens
+  resize_to: 406  # Resize images to 406x406 (divisible by DINO patch size 14, closest to 400)
 
 encoding:
   fire_channel: 1

@@ -28,15 +28,24 @@ uv run python scripts/train_dino.py \
 
 ## What Just Got Fixed
 
-The error you encountered:
-```
-TypeError: init_wandb() got an unexpected keyword argument 'script_name'
-```
+**Recent fixes and improvements:**
 
-**Fixed by:**
-- Using correct `init_wandb(cfg, context={...})` signature
-- Properly creating torchmetrics instead of calling non-existent function
-- Commit: `798f0ab`
+1. **TypeError: init_wandb() - Fixed** (commit `798f0ab`)
+   - Using correct signature with context dict
+
+2. **Train/val split bug - Fixed** (commit `ece23bc`)
+   - Validation set was empty, now properly split 80/20
+
+3. **Learning rate type error - Fixed** (commit `ece23bc`)
+   - Config values converted to float with `_coerce_float()`
+
+4. **Complete rewrite to match train_emberformer.py** (commit `4dd394b`)
+   - Same loss functions (_masked_focal, _masked_tversky, etc.)
+   - Differential learning rates for Phase 2 fine-tuning
+   - Detailed per-step and per-epoch logging
+   - Loss component tracking (focal, tversky, bce, dice)
+   - Sequence length statistics
+   - Better progress bars and console output
 
 ---
 
