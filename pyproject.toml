@@ -13,5 +13,6 @@ dependencies = [
   "rioxarray",
   "pyyaml",
   "wandb",
-  "tqdm"
+  "tqdm",
+  "transformers>=4.57.1",
 ]

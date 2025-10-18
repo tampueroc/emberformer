@@ -1,0 +1,133 @@
+# =========================
+# EmberFormer-DINO Configuration
+# Temporal Transformer + DINO Spatial Encoder
+# =========================
+
+global:
+  seed: 42
+  cudnn_benchmark: true
+
+data:
+  data_dir: "~/data/deep_crown_dataset/organized_spreads"
+  batch_size: 8  # Reduced for DINO memory footprint
+  num_workers: 8
+  pin_memory: true
+  drop_last: false
+  shuffle: true
+  sequence_length: 3  # Not actively used, kept for compatibility
+  use_pixel_data: true  # DINO requires pixel-level inputs, not tokens
+
+encoding:
+  fire_channel: 1
+  fire_value: 231
+  isochrone_channel: 1
+  isochrone_value: 231
+
+wandb:
+  enabled: true
+  mode: online
+  project: "emberformer"
+  entity: "tampueroc-university-of-chile"
+  run_name:
+  run_name_template: "{script}-dino-{dino_model}-lr{lr}-{time}"
+  
+  tags: ["dino", "focal-tversky", "refinement-decoder", "pixel-targets"]
+  auto_tags: true
+  
+  log_batch_preview: false
+  max_preview_images: 2
+  preview_size: 400
+  
+  watch: false
+  log_artifacts: true
+
+model:
+  # DINO Configuration
+  dino:
+    model_name: "facebook/dinov2-small"  # Options: dinov2-small (384), dinov2-base (768)
+    freeze_fire: true                     # Freeze fire encoder initially (Phase 1)
+    freeze_static: true                   # Always freeze static encoder
+    
+  # Temporal Transformer Configuration
+  temporal:
+    d_model: 256             # Embedding dimension (higher for DINO features)
+    nhead: 8                 # Number of attention heads
+    num_layers: 4            # Number of transformer layers
+    dim_feedforward: 1024    # Feedforward network dimension
+    dropout: 0.1             # Dropout rate
+    max_seq_len: 32          # Max sequence length
+  
+  # Feature Fusion
+  fusion:
+    d_wind: 32               # Wind embedding dimension
+    type: "concat"           # "concat" or "cross_attn"
+  
+  # Spatial Decoder Configuration
+  spatial:
+    decoder_type: "simple"   # "simple" or "unet"
+    hidden_channels: 128     # Hidden channels for simple decoder
+    base_channels: 48        # For UNet decoder if used
+  
+  # Refinement Decoder
+  refinement:
+    patch_size: 16           # Must match DINO patch size (14 or 16)
+    base_channels: 32
+  
+  # Metrics & Loss Configuration
+  metrics:
+    pred_thresh: 0.5       # Threshold for model probabilities
+    target_thresh: 0.05    # Consider patch positive if >5% pixels are fire
+    pos_weight: "auto"     # "auto" or float
+  
+  loss:
+    # Loss function selection: "bce_dice" or "focal_tversky"
+    type: "focal_tversky"  # focal_tversky handles imbalance better
+    
+    # Focal + Tversky (recommended for precision)
+    focal_weight: 0.7      # Weight for Focal loss component
+    tversky_weight: 0.3    # Weight for Tversky loss component
+    focal_alpha: 0.25      # Focal: positive class weight
+    focal_gamma: 2.0       # Focal: focusing parameter
+    tversky_alpha: 0.7     # Tversky: FP penalty
+    tversky_beta: 0.3      # Tversky: FN penalty
+
+train:
+  model: "emberformer_dino"  # Model name for W&B tracking
+  
+  # Phase 1: Frozen DINO
+  epochs: 30             # Phase 1 training epochs
+  lr: 1e-3               # Learning rate for trainable components
+  weight_decay: 1e-4
+  
+  # Phase 2: Fine-tune DINO (optional, run separately)
+  finetune:
+    enabled: false       # Set to true for Phase 2
+    epochs: 20           # Additional epochs for fine-tuning
+    lr: 1e-5             # Much lower LR for DINO fine-tuning
+    unfreeze_at_epoch: 0 # Unfreeze DINO at start of Phase 2
+  
+  log_images_every: 1    # Log validation previews every N epochs
+  log_metrics_every: 50  # Log train metrics every N steps
+  
+  # Checkpoint Configuration
+  save_checkpoints: true
+  checkpoint_dir: "checkpoints"
+  
+  # Early Stopping Configuration
+  early_stopping:
+    enabled: true
+    patience: 5          # Longer patience for DINO convergence
+    min_delta: 0.002
+    mode: "max"
+    monitor: "val/f1"
+
+# Data split configuration
+split:
+  train: 0.8
+  val: 0.1
+  test: 0.1
+  seed: 42
+
+# Static channels (terrain features)
+static:
+  num_channels: 7  # Number of static terrain channels
