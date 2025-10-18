@@ -99,6 +99,9 @@ class TokenFireDataset(torch.utils.data.Dataset):
                 "wind_hist": torch.from_numpy(wind_hist.copy()).float(), # [T_hist,2]
                 "valid":     torch.from_numpy(valid_np).bool(),          # [N]
                 "meta":      grid_hw,
+                "seq_id":    seq_id_int,                                 # For loading raw images
+                "t_last":    t_last,                                     # Frame index
+                "t_next":    t_next,                                     # Target frame index
             }
         else:
             # Backward compatibility: return only last frame
