@@ -890,24 +890,12 @@ class EmberFormerDINO(nn.Module):
         static: torch.Tensor,      # [B, Cs, H, W]
         wind: torch.Tensor,        # [B, T, 2]
         valid_t: torch.Tensor,     # [B, T] temporal validity mask
-        target_size: tuple = None, # Optional (H, W) for output size
     ) -> torch.Tensor:
         """
-        Args:
-            fire_hist: Fire history frames
-            static: Static terrain features
-            wind: Wind conditions
-            valid_t: Temporal validity mask
-            target_size: Optional output size (H, W). If None, uses input size.
-        
         Returns:
             predictions: [B, 1, H, W]
         """
         B, T, _, H, W = fire_hist.shape
-        
-        # Use target_size if provided, otherwise use input size
-        if target_size is None:
-            target_size = (H, W)
         
         # Encode fire frames with DINO
         # Reshape to process all timesteps together
@@ -947,15 +935,6 @@ class EmberFormerDINO(nn.Module):
         pixel_logits = self.refinement_decoder(
             grid_features,
             patch_logits
-        )  # [B, 1, H_out, W_out]
-        
-        # Resize to target size if needed (DINO patch size != refinement patch size)
-        if pixel_logits.shape[-2:] != target_size:
-            pixel_logits = F.interpolate(
-                pixel_logits,
-                size=target_size,
-                mode='bilinear',
-                align_corners=False
-            )
+        )  # [B, 1, H, W]
         
         return pixel_logits

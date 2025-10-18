@@ -71,7 +71,7 @@ model:
   
   # Refinement Decoder
   refinement:
-    patch_size: 16           # Must match DINO patch size (14 or 16)
+    patch_size: 14           # Match DINO patch size (14)
     base_channels: 32
   
   # Metrics & Loss Configuration
