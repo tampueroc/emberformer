@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from data import RawFireDataset
 from models.emberformer import EmberFormerDINO
-from utils import init_wandb, define_common_metrics, save_artifact
+from utils import init_wandb, save_artifact
 
 # ----------------
 # Early Stopping
@@ -307,16 +307,17 @@ def main():
     # Initialize wandb
     wandb_run = None
     if cfg['wandb']['enabled']:
-        run_name = f"dino-phase{args.phase}-{time.strftime('%m%d-%H%M')}"
-        tags = cfg['wandb'].get('tags', []) + [f"phase{args.phase}"]
+        # Update config for wandb
+        cfg['wandb']['run_name'] = f"dino-phase{args.phase}-{time.strftime('%m%d-%H%M')}"
+        cfg['wandb']['tags'] = cfg['wandb'].get('tags', []) + [f"phase{args.phase}"]
         
-        wandb_run = init_wandb(
-            cfg=cfg,
-            script_name="train_dino",
-            model_name=cfg['train']['model'],
-            run_name=run_name,
-            tags=tags
-        )
+        context = {
+            'script': 'train_dino',
+            'model': cfg['train']['model'],
+            'phase': args.phase,
+        }
+        
+        wandb_run = init_wandb(cfg=cfg, context=context)
         print(f"✓ W&B initialized: {wandb_run.name}\n")
     
     # Load datasets
@@ -418,17 +419,17 @@ def main():
     print(f"  Loss: {loss_cfg['type']}\n")
     
     # Create metrics
-    metrics_train = define_common_metrics(
-        pred_thresh=cfg['model']['metrics']['pred_thresh'],
-        target_thresh=cfg['model']['metrics'].get('target_thresh', 0.5),
-        device=device
-    )
+    def _make_metrics():
+        return {
+            'acc': torchmetrics.classification.BinaryAccuracy().to(device),
+            'precision': torchmetrics.classification.BinaryPrecision().to(device),
+            'recall': torchmetrics.classification.BinaryRecall().to(device),
+            'f1': torchmetrics.classification.BinaryF1Score().to(device),
+            'iou': torchmetrics.classification.BinaryJaccardIndex().to(device),
+        }
     
-    metrics_val = define_common_metrics(
-        pred_thresh=cfg['model']['metrics']['pred_thresh'],
-        target_thresh=cfg['model']['metrics'].get('target_thresh', 0.5),
-        device=device
-    )
+    metrics_train = _make_metrics()
+    metrics_val = _make_metrics()
     
     # Early stopping
     early_stopping = None
