@@ -241,20 +241,24 @@ def log_emberformer_preview(
     
     images = []
     for i in range(B):
-        # Prediction and target (already at pixel resolution)
+        # Prediction (already at pixel resolution)
         pred_img = F.interpolate(probs_pix[i:i+1], size=(size, size), mode="bilinear", align_corners=False)[0, 0]
-        target_img = F.interpolate(target_pix[i:i+1], size=(size, size), mode="bilinear", align_corners=False)[0, 0]
         
-        # Last fire frame: reconstruct from tokens [N, T] -> [1, Gy, Gx] -> [1, H, W]
-        last_fire_tokens = fire_hist[i, :, -1]  # [N] last timestep
+        # Target: threshold patch averages for visibility (>0.05 = fire)
+        target_img = F.interpolate(target_pix[i:i+1], size=(size, size), mode="bilinear", align_corners=False)[0, 0]
+        target_binary = (target_img > 0.05).float()  # Binarize for visualization
+        
+        # Last fire frame: reconstruct from tokens, threshold for visibility
+        last_fire_tokens = fire_hist[i, :, -1]  # [N] last timestep (patch averages)
         last_fire_grid = last_fire_tokens.reshape(1, Gy, Gx).unsqueeze(0)  # [1, 1, Gy, Gx]
         last_fire_pix = F.interpolate(last_fire_grid, scale_factor=patch_size, mode="nearest")[0, 0]
         last_fire_img = F.interpolate(last_fire_pix.unsqueeze(0).unsqueeze(0), size=(size, size), 
                                       mode="bilinear", align_corners=False)[0, 0]
+        last_fire_binary = (last_fire_img > 0.05).float()  # Binarize for visibility
         
         images.append(wandb.Image((pred_img.numpy() * 255).astype("uint8"), caption=f"pred[{i}]"))
-        images.append(wandb.Image((target_img.numpy() * 255).astype("uint8"), caption=f"target[{i}]"))
-        images.append(wandb.Image((last_fire_img.numpy() * 255).astype("uint8"), caption=f"last_fire[{i}]"))
+        images.append(wandb.Image((target_binary.numpy() * 255).astype("uint8"), caption=f"target[{i}]"))
+        images.append(wandb.Image((last_fire_binary.numpy() * 255).astype("uint8"), caption=f"last_fire[{i}]"))
     
     run.log({key: images})
 
