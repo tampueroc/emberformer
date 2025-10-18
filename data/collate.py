@@ -47,6 +47,9 @@ def collate_tokens_temporal(batch):
     y_batch = torch.empty((B, N), dtype=y_list[0].dtype, device=y_list[0].device)
     
     meta_list = []
+    seq_ids = []
+    t_lasts = []
+    t_nexts = []
     
     for i, (X, y) in enumerate(batch):
         T_hist_i = X["fire_hist"].shape[0]
@@ -60,6 +63,11 @@ def collate_tokens_temporal(batch):
         valid_batch[i] = X["valid"]
         y_batch[i] = y
         meta_list.append(X["meta"])
+        
+        # Collect sequence/frame IDs for raw image loading
+        seq_ids.append(X.get("seq_id", 0))
+        t_lasts.append(X.get("t_last", 0))
+        t_nexts.append(X.get("t_next", 0))
     
     X_batch = {
         "static": static_batch,
@@ -68,6 +76,9 @@ def collate_tokens_temporal(batch):
         "valid": valid_batch,
         "valid_t": valid_t_batch,
         "meta": meta_list,  # Keep as list, or stack if needed
+        "seq_ids": seq_ids,
+        "t_lasts": t_lasts,
+        "t_nexts": t_nexts,
     }
     
     return X_batch, y_batch
