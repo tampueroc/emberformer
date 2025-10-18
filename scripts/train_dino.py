@@ -265,7 +265,9 @@ def train_one_epoch(model, loader, optimizer, scaler, metrics, device, cfg, epoc
         
         # Forward pass with mixed precision
         with amp.autocast(device_type='cuda' if device.type == 'cuda' else 'cpu'):
-            logits = model(fire_hist, static, wind, valid_t)
+            # Pass target size to handle DINO patch size mismatch
+            target_size = targets.shape[-2:]
+            logits = model(fire_hist, static, wind, valid_t, target_size=target_size)
             
             # Create mask (all pixels valid for raw data)
             mask = torch.ones_like(targets, dtype=torch.bool)
@@ -407,7 +409,8 @@ def validate(model, loader, device, cfg, epoch):
         valid_t = valid_t.to(device, non_blocking=True)
         
         with amp.autocast(device_type='cuda' if device.type == 'cuda' else 'cpu'):
-            logits = model(fire_hist, static, wind, valid_t)
+            target_size = targets.shape[-2:]
+            logits = model(fire_hist, static, wind, valid_t, target_size=target_size)
             
             mask = torch.ones_like(targets, dtype=torch.bool)
             
