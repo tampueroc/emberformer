@@ -193,6 +193,82 @@ def _masked_soft_dice_loss(logits, y, mask, smooth=1.0, ignore_empty=True):
     # Apply square root to compress high values: sqrt(0.8) = 0.89 → 0.3 is more comparable to BCE
     return torch.sqrt(dice_loss + 1e-7)
 
+def _masked_focal_loss(logits, y, mask, alpha=0.25, gamma=2.0, pos_weight=None):
+    """
+    Focal Loss for handling class imbalance by focusing on hard examples.
+    
+    Down-weights easy negatives (most background pixels) to focus on fire regions.
+    
+    Args:
+        logits: [B, 1, H, W] raw logits
+        y: [B, 1, H, W] targets in [0, 1]
+        mask: [B, 1, H, W] boolean mask
+        alpha: weight for positive class (0.25 = down-weight positives slightly)
+        gamma: focusing parameter (2.0 = standard, higher = more focus on hard examples)
+        pos_weight: optional positive class weight (for extreme imbalance)
+    
+    Returns:
+        scalar focal loss
+    """
+    # BCE loss
+    bce = F.binary_cross_entropy_with_logits(logits, y, reduction='none', pos_weight=pos_weight)
+    
+    # Compute p_t (probability of true class)
+    probs = torch.sigmoid(logits)
+    p_t = probs * y + (1 - probs) * (1 - y)
+    
+    # Focal weight: (1 - p_t)^gamma
+    # Easy examples (p_t → 1) get down-weighted
+    # Hard examples (p_t → 0) retain full weight
+    focal_weight = (1 - p_t) ** gamma
+    
+    # Alpha weighting: balance pos/neg
+    alpha_t = alpha * y + (1 - alpha) * (1 - y)
+    
+    # Final loss
+    loss = alpha_t * focal_weight * bce
+    loss = loss * mask.float()
+    
+    return loss.sum() / mask.float().sum().clamp_min(1.0)
+
+def _masked_tversky_loss(logits, y, mask, alpha=0.7, beta=0.3, smooth=1.0):
+    """
+    Tversky Loss for direct precision/recall control.
+    
+    alpha > beta: penalize false positives more → favor precision
+    beta > alpha: penalize false negatives more → favor recall
+    
+    Args:
+        logits: [B, 1, H, W] raw logits
+        y: [B, 1, H, W] targets in [0, 1]
+        mask: [B, 1, H, W] boolean mask
+        alpha: FP penalty weight (0.7 = penalize FP heavily for precision)
+        beta: FN penalty weight (0.3 = less penalty on FN)
+        smooth: smoothing term
+    
+    Returns:
+        scalar Tversky loss
+    """
+    p = torch.sigmoid(logits).float()
+    y = y.float()
+    m = mask.float()
+    
+    # Apply mask
+    p = p * m
+    y = y * m
+    
+    # Compute Tversky components per sample
+    dims = (1, 2, 3)
+    TP = (p * y).sum(dims)
+    FP = (p * (1 - y)).sum(dims)
+    FN = ((1 - p) * y).sum(dims)
+    
+    # Tversky index: TP / (TP + alpha*FP + beta*FN)
+    tversky = (TP + smooth) / (TP + alpha * FP + beta * FN + smooth)
+    
+    # Loss: 1 - Tversky
+    return (1.0 - tversky).mean()
+
 # ----------------
 # Deterministic split helpers
 # ----------------
@@ -288,9 +364,20 @@ def main():
     posw_cfg      = mcfg.get("pos_weight", "auto")
     
     # Loss configuration
+    loss_type = lcfg.get("type", "bce_dice")  # "bce_dice" or "focal_tversky"
+    
+    # BCE + Dice config
     use_dice = lcfg.get("use_dice", True)
     bce_weight = float(lcfg.get("bce_weight", 0.5))
     dice_weight = float(lcfg.get("dice_weight", 0.5))
+    
+    # Focal + Tversky config
+    focal_weight = float(lcfg.get("focal_weight", 0.7))
+    tversky_weight = float(lcfg.get("tversky_weight", 0.3))
+    focal_alpha = float(lcfg.get("focal_alpha", 0.25))
+    focal_gamma = float(lcfg.get("focal_gamma", 2.0))
+    tversky_alpha = float(lcfg.get("tversky_alpha", 0.7))
+    tversky_beta = float(lcfg.get("tversky_beta", 0.3))
 
     # Deterministic split
     split_cfg = cfg.get("split", {})
@@ -425,7 +512,10 @@ def main():
     print(f"  Val samples: {len(val_set)}")
     print(f"  Batch size: {bs}")
     print(f"  LR temporal: {lr_temporal:.2e}, LR spatial: {lr_spatial:.2e}")
-    if use_dice:
+    if loss_type == "focal_tversky":
+        print(f"  Loss: Focal ({focal_weight}, α={focal_alpha}, γ={focal_gamma}) + "
+              f"Tversky ({tversky_weight}, α={tversky_alpha}, β={tversky_beta})")
+    elif use_dice:
         print(f"  Loss: BCE ({bce_weight}) + Dice ({dice_weight})")
     else:
         print(f"  Loss: BCE only (pos_weight={posw_cfg})")
@@ -475,28 +565,44 @@ def main():
                 mask = valid.view(-1, 1, gH, gW)
                 mask_pix = F.interpolate(mask.float(), scale_factor=P, mode="nearest").bool()
                 
-                # Combined loss: BCE + Dice (configured from yaml)
-                if use_dice:
-                    # Use pos_weight with Dice when precision is too low
-                    if posw_cfg == "auto":
-                        pos_weight = _auto_pos_weight(y_pix, mask_pix).detach().to(device)
-                    elif isinstance(posw_cfg, (int, float)):
-                        pos_weight = torch.tensor(float(posw_cfg), device=device)
+                # Loss computation (configured from yaml)
+                if loss_type == "focal_tversky":
+                    # Focal + Tversky (recommended for precision)
+                    focal = _masked_focal_loss(logits_pix, y_pix, mask_pix, 
+                                               alpha=focal_alpha, gamma=focal_gamma)
+                    tversky = _masked_tversky_loss(logits_pix, y_pix, mask_pix,
+                                                   alpha=tversky_alpha, beta=tversky_beta)
+                    loss = focal_weight * focal + tversky_weight * tversky
+                    loss_component_1, loss_component_2 = focal, tversky
+                    loss_name_1, loss_name_2 = "focal", "tversky"
+                elif loss_type == "bce_dice":
+                    # BCE + Dice (legacy)
+                    if use_dice:
+                        if posw_cfg == "auto":
+                            pos_weight = _auto_pos_weight(y_pix, mask_pix).detach().to(device)
+                        elif isinstance(posw_cfg, (int, float)):
+                            pos_weight = torch.tensor(float(posw_cfg), device=device)
+                        else:
+                            pos_weight = None
+                        
+                        bce = _masked_bce(logits_pix, y_pix, mask_pix, pos_weight=pos_weight)
+                        dice = _masked_soft_dice_loss(logits_pix, y_pix, mask_pix)
+                        loss = bce_weight * bce + dice_weight * dice
+                        loss_component_1, loss_component_2 = bce, dice
+                        loss_name_1, loss_name_2 = "bce", "dice"
                     else:
-                        pos_weight = None
-                    
-                    bce = _masked_bce(logits_pix, y_pix, mask_pix, pos_weight=pos_weight)
-                    dice = _masked_soft_dice_loss(logits_pix, y_pix, mask_pix)
-                    loss = bce_weight * bce + dice_weight * dice
+                        # BCE only
+                        if posw_cfg == "auto":
+                            pos_weight = _auto_pos_weight(y_pix, mask_pix).detach().to(device)
+                        elif isinstance(posw_cfg, (int, float)):
+                            pos_weight = torch.tensor(float(posw_cfg), device=device)
+                        else:
+                            pos_weight = None
+                        loss = _masked_bce(logits_pix, y_pix, mask_pix, pos_weight)
+                        loss_component_1, loss_component_2 = loss, None
+                        loss_name_1, loss_name_2 = "bce", None
                 else:
-                    # Fallback to BCE only with pos_weight
-                    if posw_cfg == "auto":
-                        pos_weight = _auto_pos_weight(y_pix, mask_pix).detach().to(device)
-                    elif isinstance(posw_cfg, (int, float)):
-                        pos_weight = torch.tensor(float(posw_cfg), device=device)
-                    else:
-                        pos_weight = None
-                    loss = _masked_bce(logits_pix, y_pix, mask_pix, pos_weight)
+                    raise ValueError(f"Unknown loss type: {loss_type}")
 
             scaler.scale(loss).backward()
             scaler.step(opt)
@@ -533,9 +639,10 @@ def main():
                 }
                 
                 # Log individual loss components
-                if use_dice:
-                    log_dict["train/bce_step"] = bce.item()
-                    log_dict["train/dice_step"] = dice.item()
+                if loss_component_1 is not None:
+                    log_dict[f"train/{loss_name_1}_step"] = loss_component_1.item()
+                if loss_component_2 is not None:
+                    log_dict[f"train/{loss_name_2}_step"] = loss_component_2.item()
                 
                 # Log step-level metrics every N steps (not every step to reduce overhead)
                 if step % log_metrics_every == 0:
@@ -583,12 +690,21 @@ def main():
                     mask_pix = F.interpolate(mask.float(), scale_factor=P, mode="nearest").bool()
                     
                     # Use same loss as training
-                    if use_dice:
-                        bce_val = _masked_bce(logits_pix, y_pix, mask_pix, None)
-                        dice_val = _masked_soft_dice_loss(logits_pix, y_pix, mask_pix)
-                        vloss = bce_weight * bce_val + dice_weight * dice_val
+                    if loss_type == "focal_tversky":
+                        focal_val = _masked_focal_loss(logits_pix, y_pix, mask_pix,
+                                                       alpha=focal_alpha, gamma=focal_gamma)
+                        tversky_val = _masked_tversky_loss(logits_pix, y_pix, mask_pix,
+                                                           alpha=tversky_alpha, beta=tversky_beta)
+                        vloss = focal_weight * focal_val + tversky_weight * tversky_val
+                    elif loss_type == "bce_dice":
+                        if use_dice:
+                            bce_val = _masked_bce(logits_pix, y_pix, mask_pix, None)
+                            dice_val = _masked_soft_dice_loss(logits_pix, y_pix, mask_pix)
+                            vloss = bce_weight * bce_val + dice_weight * dice_val
+                        else:
+                            vloss = _masked_bce(logits_pix, y_pix, mask_pix, None)
                     else:
-                        vloss = _masked_bce(logits_pix, y_pix, mask_pix, None)
+                        raise ValueError(f"Unknown loss type: {loss_type}")
                 
                 val_loss_total += float(vloss)
                 nb += 1
@@ -621,7 +737,12 @@ def main():
         for v in Mva.values(): v.reset()
 
         # Log epoch summary to console
-        loss_str = f"BCE+Dice" if use_dice else "BCE"
+        if loss_type == "focal_tversky":
+            loss_str = "Focal+Tversky"
+        elif use_dice:
+            loss_str = "BCE+Dice"
+        else:
+            loss_str = "BCE"
         print(f"[Epoch {ep+1:2d}/{epochs}] {loss_str} | "
               f"train: loss={avg_train_loss:.4f} f1={train_metrics['train/f1']:.3f} prec={train_metrics['train/prec']:.3f} | "
               f"val: loss={val_loss:.4f} f1={val_metrics['val/f1']:.3f} prec={val_metrics['val/prec']:.3f} "

@@ -69,10 +69,21 @@ model:
     pos_weight: "auto"     # "auto" or float (only used if use_dice=False)
   
   loss:
-    use_dice: true         # Enable Dice loss (optimizes IoU/F1 directly)
-    bce_weight: 0.9        # Weight for BCE component (heavily favor precision)
-    dice_weight: 0.1       # Weight for Dice component (minimal, just for IoU awareness)
-                           # 0.9/0.1 strongly penalizes false positives via BCE
+    # Loss function selection: "bce_dice" or "focal_tversky"
+    type: "focal_tversky"  # focal_tversky handles imbalance better (recommended)
+    
+    # BCE + Dice (legacy, for comparison)
+    use_dice: true         # Enable Dice loss (only used if type="bce_dice")
+    bce_weight: 0.9        # Weight for BCE component
+    dice_weight: 0.1       # Weight for Dice component
+    
+    # Focal + Tversky (recommended for precision)
+    focal_weight: 0.7      # Weight for Focal loss component
+    tversky_weight: 0.3    # Weight for Tversky loss component
+    focal_alpha: 0.25      # Focal: positive class weight (0.25 = standard)
+    focal_gamma: 2.0       # Focal: focusing parameter (2.0 = standard)
+    tversky_alpha: 0.7     # Tversky: FP penalty (>0.5 favors precision)
+    tversky_beta: 0.3      # Tversky: FN penalty (<0.5 reduces recall penalty)
 
 train:
   epochs: 20             # Max epochs (early stopping may end sooner at ~10-15)
