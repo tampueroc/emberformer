@@ -566,15 +566,25 @@ def main():
     total_samples = len(full_dataset.samples)
     train_size = int(cfg['split']['train'] * total_samples)
 
-    train_dataset = RawFireDataset(data_dir,
-                                   sequence_length=cfg['data']['sequence_length'],
-                                   transform=transform)
-    train_dataset.samples = full_dataset.samples[:train_size]
+    try:
+        print("  Creating train dataset...")
+        train_dataset = RawFireDataset(data_dir,
+                                       sequence_length=cfg['data']['sequence_length'],
+                                       transform=transform)
+        train_dataset.samples = full_dataset.samples[:train_size]
+        print(f"    Train dataset created with {len(train_dataset.samples)} samples")
 
-    val_dataset = RawFireDataset(data_dir,
-                                 sequence_length=cfg['data']['sequence_length'],
-                                 transform=transform)
-    val_dataset.samples = full_dataset.samples[train_size:]
+        print("  Creating val dataset...")
+        val_dataset = RawFireDataset(data_dir,
+                                     sequence_length=cfg['data']['sequence_length'],
+                                     transform=transform)
+        val_dataset.samples = full_dataset.samples[train_size:]
+        print(f"    Val dataset created with {len(val_dataset.samples)} samples")
+    except Exception as e:
+        print(f"  ERROR during dataset split: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
     print(f"  Total: {total_samples} samples")
     print(f"  Train: {len(train_dataset.samples)} samples")
