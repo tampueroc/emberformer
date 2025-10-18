@@ -267,44 +267,71 @@ class RefinementDecoder(nn.Module):
     
     Args:
         d_model: input feature dimension from temporal transformer
-        patch_size: upsampling factor (e.g., 8 or 16)
+        patch_size: upsampling factor (e.g., 8 or 16) - defaults to 14
         base_channels: base channel count for decoder layers
     """
-    def __init__(self, d_model: int, patch_size: int = 8, base_channels: int = 32):
+    def __init__(self, d_model: int, patch_size: int = 14, base_channels: int = 32):
         super().__init__()
         self.patch_size = patch_size
         
-        # Calculate number of upsampling stages (log2 of patch_size)
+        # Calculate number of upsampling stages
+        # For non-power-of-2 sizes like 14, we use a combination of upsampling operations
         import math
-        num_stages = int(math.log2(patch_size))
-        assert 2 ** num_stages == patch_size, f"patch_size must be power of 2, got {patch_size}"
+        if patch_size == 14:
+            # 14 = 2 × 7, use custom upsampling strategy
+            num_stages = 2  # Two stages: 2× and 7×
+        else:
+            num_stages = int(math.log2(patch_size))
+            assert 2 ** num_stages == patch_size, f"patch_size must be power of 2 or 14, got {patch_size}"
         
         # Input combines coarse prediction (1 ch) + features (d_model ch)
         self.input_proj = nn.Conv2d(d_model + 1, base_channels * 4, kernel_size=1)
         
         # Progressive upsampling with residual blocks
-        layers = []
-        in_ch = base_channels * 4
-        out_ch = base_channels * 4
-        
-        for i in range(num_stages):
-            # Transposed conv for 2× upsampling
-            layers.append(nn.ConvTranspose2d(
-                in_ch, out_ch, 
-                kernel_size=4, stride=2, padding=1, bias=False
-            ))
-            layers.append(nn.BatchNorm2d(out_ch))
-            layers.append(nn.ReLU(inplace=True))
+        if patch_size == 14:
+            # Custom upsampling for 14×: first 2×, then 7×
+            self.upsample_layers = nn.Sequential(
+                # Stage 1: 2× upsampling
+                nn.ConvTranspose2d(base_channels * 4, base_channels * 4, kernel_size=4, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(base_channels * 4),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(base_channels * 4, base_channels * 4, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(base_channels * 4),
+                nn.ReLU(inplace=True),
+                
+                # Stage 2: 7× upsampling using interpolation + conv
+                nn.Upsample(scale_factor=7, mode='bilinear', align_corners=False),
+                nn.Conv2d(base_channels * 4, base_channels * 2, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(base_channels * 2),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(base_channels * 2, base_channels * 2, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(base_channels * 2),
+                nn.ReLU(inplace=True),
+            )
+            in_ch = base_channels * 2
+        else:
+            layers = []
+            in_ch = base_channels * 4
+            out_ch = base_channels * 4
             
-            # Refinement conv to reduce artifacts
-            layers.append(nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False))
-            layers.append(nn.BatchNorm2d(out_ch))
-            layers.append(nn.ReLU(inplace=True))
+            for i in range(num_stages):
+                # Transposed conv for 2× upsampling
+                layers.append(nn.ConvTranspose2d(
+                    in_ch, out_ch, 
+                    kernel_size=4, stride=2, padding=1, bias=False
+                ))
+                layers.append(nn.BatchNorm2d(out_ch))
+                layers.append(nn.ReLU(inplace=True))
+                
+                # Refinement conv to reduce artifacts
+                layers.append(nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False))
+                layers.append(nn.BatchNorm2d(out_ch))
+                layers.append(nn.ReLU(inplace=True))
+                
+                in_ch = out_ch
+                out_ch = max(base_channels, out_ch // 2)  # Reduce channels each stage
             
-            in_ch = out_ch
-            out_ch = max(base_channels, out_ch // 2)  # Reduce channels each stage
-        
-        self.upsample_layers = nn.Sequential(*layers)
+            self.upsample_layers = nn.Sequential(*layers)
         
         # Final 1×1 conv to prediction
         self.output_conv = nn.Conv2d(in_ch, 1, kernel_size=1)
