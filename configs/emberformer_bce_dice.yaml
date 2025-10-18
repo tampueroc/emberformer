@@ -26,7 +26,7 @@ wandb:
   enabled: true
   mode: online
   project: "emberformer"
-  entity: "tampueroc-university-of-chile-org"
+  entity: "tampueroc-university-of-chile"
   run_name:
   run_name_template: "{script}-{model}-lr{lr}-{time}"
   
