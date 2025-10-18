@@ -21,7 +21,7 @@ data:
 
 patchify_on_disk:
   enabled: true
-  cache_dir: "/home/tampuero/data/deep_crown_dataset/organized_spreads/patch_cache"
+  cache_dir: "/home/tampuero/data/emberformer/patch_cache"
   patch_size: 8
   stride: 8
   pad_mode: "strict"
