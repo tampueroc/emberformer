@@ -550,9 +550,16 @@ def main():
     transform = ResizeTransform(target_size)
 
     print(f"Loading datasets (resizing to {target_size}x{target_size})...")
-    full_dataset = RawFireDataset(data_dir,
-                                   sequence_length=cfg['data']['sequence_length'],
-                                   transform=transform)
+    try:
+        full_dataset = RawFireDataset(data_dir,
+                                       sequence_length=cfg['data']['sequence_length'],
+                                       transform=transform)
+        print(f"  Dataset loaded: {len(full_dataset.samples)} samples")
+    except Exception as e:
+        print(f"  ERROR loading dataset: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
     # Split into train/val
     total_samples = len(full_dataset.samples)
