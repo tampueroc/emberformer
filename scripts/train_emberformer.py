@@ -558,9 +558,10 @@ def main():
                     fire_hist, wind_hist, static, valid_t, grid_shape=(gH, gW)
                 )
                 
-                # Prepare targets and mask at pixel resolution
-                y_map = y_batch.view(-1, 1, gH, gW)
-                y_pix = F.interpolate(y_map, scale_factor=P, mode="nearest")
+                # Targets are already full resolution [B, 1, H, W]
+                y_pix = y_batch
+                
+                # Mask at pixel resolution
                 mask = valid.view(-1, 1, gH, gW)
                 mask_pix = F.interpolate(mask.float(), scale_factor=P, mode="nearest").bool()
                 
@@ -684,9 +685,10 @@ def main():
                         fire_hist, wind_hist, static, valid_t, grid_shape=(gH, gW)
                     )
                     
-                    # Prepare targets and mask at pixel resolution
-                    y_map = y_batch.view(-1, 1, gH, gW)
-                    y_pix = F.interpolate(y_map, scale_factor=P, mode="nearest")
+                    # Targets are already full resolution [B, 1, H, W]
+                    y_pix = y_batch
+                    
+                    # Mask at pixel resolution
                     mask = valid.view(-1, 1, gH, gW)
                     mask_pix = F.interpolate(mask.float(), scale_factor=P, mode="nearest").bool()
                     

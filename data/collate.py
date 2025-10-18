@@ -21,7 +21,7 @@ def collate_tokens_temporal(batch):
             valid:     [B, N]
             valid_t:   [B, T_max] (temporal validity: True=real, False=pad)
             meta:      [B, 2] or list of [2] tensors
-        y_batch: [B, N]
+        y_batch: [B, 1, H, W] full-resolution pixel targets
     """
     X_list, y_list = zip(*batch)
     B = len(X_list)
@@ -31,6 +31,7 @@ def collate_tokens_temporal(batch):
     
     # Get dimensions from first sample
     N, Cs = X_list[0]["static"].shape
+    _, H, W = y_list[0].shape  # Full-resolution targets: [1, H, W]
     
     # Infer dtype/device from first sample
     static_dtype, static_device = X_list[0]["static"].dtype, X_list[0]["static"].device
@@ -44,7 +45,7 @@ def collate_tokens_temporal(batch):
     wind_hist_batch = torch.zeros((B, T_max, 2), dtype=wind_dtype, device=wind_device)
     valid_batch = torch.empty((B, N), dtype=valid_dtype, device=valid_device)
     valid_t_batch = torch.zeros((B, T_max), dtype=torch.bool, device=fire_device)
-    y_batch = torch.empty((B, N), dtype=y_list[0].dtype, device=y_list[0].device)
+    y_batch = torch.empty((B, 1, H, W), dtype=y_list[0].dtype, device=y_list[0].device)  # Full-res targets
     
     meta_list = []
     seq_ids = []
