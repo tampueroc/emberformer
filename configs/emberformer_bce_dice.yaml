@@ -1,0 +1,128 @@
+# =========================
+# EmberFormer Configuration
+# Temporal Transformer + SegFormer Spatial Decoder
+# =========================
+
+global:
+  seed: 42
+  cudnn_benchmark: true
+
+data:
+  data_dir: "~/data/deep_crown_dataset/organized_spreads"
+  batch_size: 16  # Balanced for RTX 3090 (24GB) - safe margin
+  num_workers: 8
+  pin_memory: true
+  drop_last: false
+  shuffle: true
+  sequence_length: 3  # Not actively used, kept for compatibility
+
+encoding:
+  fire_channel: 1
+  fire_value: 231
+  isochrone_channel: 1
+  isochrone_value: 231
+
+wandb:
+  enabled: true
+  mode: online
+  project: "emberformer"
+  entity: ""
+  run_name:
+  run_name_template: "{script}-{model}-lr{lr}-{time}"
+  
+  tags: []
+  auto_tags: true
+  
+  log_batch_preview: false
+  max_preview_images: 2
+  preview_size: 400
+  
+  watch: false
+  log_artifacts: true
+
+model:
+  # Temporal Transformer Configuration
+  temporal:
+    d_model: 96              # Embedding dimension (balanced - between 64 and 128)
+    nhead: 8                 # Number of attention heads
+    num_layers: 4            # Number of transformer layers (balanced)
+    dim_feedforward: 384     # Feedforward network dimension (balanced)
+    dropout: 0.1             # Dropout rate
+    max_seq_len: 32          # Max sequence length (supports up to 32, auto-extends if longer)
+                             # Note: >50% of dataset has T≤6, but some sequences are longer
+    use_wind: true           # Include wind embeddings
+    use_static: true         # Include static terrain embeddings
+  
+  # Spatial Decoder Configuration
+  spatial:
+    decoder_type: "segformer"  # "segformer" or "unet"
+    pretrained: true           # Load pre-trained weights
+    model_name: "nvidia/segformer-b1-finetuned-ade-512-512"  # B1 - middle ground
+    freeze_initially: false    # Freeze decoder at start
+    freeze_epochs: 5           # Unfreeze after N epochs (0 = never freeze)
+    base_channels: 48          # For UNet decoder (balanced)
+  
+  # Metrics & Loss Configuration
+  metrics:
+    pred_thresh: 0.5       # Threshold for model probabilities
+    target_thresh: 0.05    # Consider patch positive if >5% pixels are fire
+    pos_weight: "auto"     # "auto" or float (only used if use_dice=False)
+  
+  loss:
+    # Loss function selection: "bce_dice" or "focal_tversky"
+    type: "bce_dice"       # BCE+Dice comparison experiment
+    
+    # BCE + Dice (legacy, for comparison)
+    use_dice: true         # Enable Dice loss (only used if type="bce_dice")
+    bce_weight: 0.9        # Weight for BCE component
+    dice_weight: 0.1       # Weight for Dice component
+    
+    # Focal + Tversky (recommended for precision)
+    focal_weight: 0.7      # Weight for Focal loss component
+    tversky_weight: 0.3    # Weight for Tversky loss component
+    focal_alpha: 0.25      # Focal: positive class weight (0.25 = standard)
+    focal_gamma: 2.0       # Focal: focusing parameter (2.0 = standard)
+    tversky_alpha: 0.7     # Tversky: FP penalty (>0.5 favors precision)
+    tversky_beta: 0.3      # Tversky: FN penalty (<0.5 reduces recall penalty)
+
+train:
+  epochs: 20             # Max epochs (early stopping may end sooner at ~10-15)
+  lr_temporal: 1e-3      # Learning rate for temporal components
+  lr_spatial: 1e-4       # Learning rate for spatial decoder (lower for pre-trained)
+  weight_decay: 1e-4
+  log_images_every: 1    # Log validation previews every N epochs
+  log_metrics_every: 50  # Log train metrics (prec, f1, etc.) every N steps
+  
+  # Checkpoint Configuration
+  save_checkpoints: true      # Save best model during training
+  checkpoint_dir: "checkpoints"  # Where to save checkpoints
+  
+  # Early Stopping Configuration
+  early_stopping:
+    enabled: true        # Enable early stopping
+    patience: 3          # Stop if no improvement for N epochs (3-5 for large datasets)
+    min_delta: 0.002     # Minimum improvement to count (0.002 = 0.2%)
+    mode: "max"          # 'max' for F1/IoU, 'min' for loss
+    monitor: "val/f1"    # Metric to monitor: "val/f1", "val/iou", or "val/loss"
+
+# Patch cache configuration
+patchify_on_disk:
+  enabled: true
+  cache_dir: "~/data/emberformer/patch_cache"
+  patch_size: 16
+  stride: 16
+  pad_mode: "strict"
+  log_artifact: true
+  
+  # Build-time knobs (not used by training)
+  progress_use_tqdm: true
+  progress_log_every: 25
+  progress_log_to_wandb: true
+  preview_n: 1
+
+# Data split configuration
+split:
+  train: 0.8
+  val: 0.1
+  test: 0.1
+  seed: 42
