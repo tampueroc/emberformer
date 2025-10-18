@@ -562,6 +562,7 @@ def main():
         raise
 
     # Split into train/val
+    print("  Splitting dataset...")
     total_samples = len(full_dataset.samples)
     train_size = int(cfg['split']['train'] * total_samples)
 
@@ -580,6 +581,7 @@ def main():
     print(f"  Val: {len(val_dataset.samples)} samples\n")
 
     # Create dataloaders
+    print("Creating dataloaders...")
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg['data']['batch_size'],
@@ -598,11 +600,13 @@ def main():
         pin_memory=cfg['data']['pin_memory'],
         collate_fn=collate_raw_dino
     )
+    print("  Dataloaders created\n")
 
     # Get static channels from first sample
+    print("Getting first sample to check dimensions...")
     first_sample = train_dataset[0]
     static_channels = first_sample[1].shape[0]
-    print(f"Static channels: {static_channels}")
+    print(f"  Static channels: {static_channels}")
 
     # Create model
     print("\nCreating EmberFormerDINO...")
