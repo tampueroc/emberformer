@@ -14,7 +14,7 @@ data:
   pin_memory: true
   drop_last: false
   shuffle: true
-  sequence_length: 3  # Not actively used, kept for compatibility
+  sequence_length: 6  # Not actively used, kept for compatibility
   use_pixel_data: true  # DINO requires pixel-level inputs, not tokens
   resize_to: 406  # Resize images to 406x406 (divisible by DINO patch size 14, closest to 400)
 
@@ -89,8 +89,8 @@ model:
     tversky_weight: 0.3    # Weight for Tversky loss component
     focal_alpha: 0.25      # Focal: positive class weight
     focal_gamma: 2.0       # Focal: focusing parameter
-    tversky_alpha: 0.7     # Tversky: FP penalty
-    tversky_beta: 0.3      # Tversky: FN penalty
+    tversky_alpha: 0.3     # Tversky: FP penalty
+    tversky_beta: 0.7      # Tversky: FN penalty
 
 train:
   model: "emberformer_dino"  # Model name for W&B tracking
