@@ -1,5 +1,5 @@
-checkpoint: /home/tampuero/data/emberformer/checkpoints/dino_phase1_best.pt
+checkpoint: checkpoints/dino_phase1_best.pt
 config: configs/emberformer_dino.yaml
 device: cuda
 num_samples: 100
-timestamp: '20251019_105604'
+timestamp: '20251019_141710'
