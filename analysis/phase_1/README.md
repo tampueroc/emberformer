@@ -5,7 +5,7 @@ Comprehensive analysis suite for understanding EmberFormer-DINO Phase 1 (frozen 
 ## Prerequisites
 
 - ✅ Phase 1 training complete (F1 = 68.9%, epoch 24)
-- ✅ Checkpoint exists: `checkpoints/dino_phase1_best.pt`
+- ✅ Checkpoint exists: `~/data/emberformer/checkpoints/dino_phase1_best.pt`
 - ✅ Validation dataset available
 
 ## Quick Start
@@ -34,7 +34,7 @@ python analysis/phase_1/run_analysis.py --num-samples 50
 
 ```bash
 python analysis/phase_1/run_analysis.py \
-    --checkpoint checkpoints/dino_phase1_best.pt \
+    --checkpoint ~/data/emberformer/checkpoints/dino_phase1_best.pt \
     --config configs/emberformer_dino.yaml \
     --output-dir analysis/phase_1 \
     --num-samples 100 \
@@ -131,7 +131,7 @@ After Phase 2 training completes, re-run this analysis:
 
 ```bash
 python analysis/phase_1/run_analysis.py \
-    --checkpoint checkpoints/dino_phase2_best.pt \
+    --checkpoint ~/data/emberformer/checkpoints/dino_phase2_best.pt \
     --output-dir analysis/phase_2
 ```
 
@@ -159,10 +159,10 @@ python analysis/phase_1/run_analysis.py --skip features extreme
 ### Missing Checkpoint
 ```bash
 # Verify checkpoint exists
-ls -lh checkpoints/dino_phase1_best.pt
+ls -lh ~/data/emberformer/checkpoints/dino_phase1_best.pt
 
 # If missing, retrain Phase 1
-uv run scripts/train_dino.py --phase 1 --config configs/emberformer_dino.yaml --gpu 0
+uv run python scripts/train_dino.py --phase 1 --config configs/emberformer_dino.yaml --gpu 0
 ```
 
 ## Output Structure

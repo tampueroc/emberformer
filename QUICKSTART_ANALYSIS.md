@@ -84,7 +84,7 @@ results/phase_1/{timestamp}/
 
 ### Check if checkpoint exists
 ```bash
-ls -lh checkpoints/dino_phase1_best.pt
+ls -lh ~/data/emberformer/checkpoints/dino_phase1_best.pt
 ```
 
 ### Run fast basic analysis (5-10 min)
@@ -110,10 +110,10 @@ python analysis/phase_1/run_advanced_analysis.py --device cpu
 ### Missing checkpoint
 ```bash
 # Check available checkpoints
-ls checkpoints/
+ls ~/data/emberformer/checkpoints/
 
 # If missing, you need to train Phase 1 first
-uv run scripts/train_dino.py --phase 1 --config configs/emberformer_dino.yaml --gpu 0
+uv run python scripts/train_dino.py --phase 1 --config configs/emberformer_dino.yaml --gpu 0
 ```
 
 ### Out of memory
@@ -159,12 +159,12 @@ Once Phase 2 training completes, run the same analyses:
 ```bash
 # Basic analysis on Phase 2
 python analysis/phase_1/run_analysis.py \
-    --checkpoint checkpoints/dino_phase2_best.pt \
+    --checkpoint ~/data/emberformer/checkpoints/dino_phase2_best.pt \
     --output-dir analysis/phase_2
 
 # Advanced analysis on Phase 2
 python analysis/phase_1/run_advanced_analysis.py \
-    --checkpoint checkpoints/dino_phase2_best.pt \
+    --checkpoint ~/data/emberformer/checkpoints/dino_phase2_best.pt \
     --phase 2 \
     --run-name finetuned_dino
 ```

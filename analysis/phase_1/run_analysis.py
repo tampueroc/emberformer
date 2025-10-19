@@ -117,7 +117,7 @@ def load_model_and_data(checkpoint_path, config_path, device='cuda'):
 def main():
     parser = argparse.ArgumentParser(description="Phase 1 Interpretability Analysis")
     parser.add_argument('--checkpoint', type=str, 
-                       default='checkpoints/dino_phase1_best.pt',
+                       default='~/data/emberformer/checkpoints/dino_phase1_best.pt',
                        help='Path to Phase 1 checkpoint')
     parser.add_argument('--config', type=str,
                        default='configs/emberformer_dino.yaml',
