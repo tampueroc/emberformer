@@ -73,25 +73,25 @@ def load_model_and_data(checkpoint_path, config_path, device='cuda'):
     
     transform = ResizeTransform(target_size)
     
-    # Load dataset
-    print(f"\n📊 Loading validation dataset...")
+    # Load dataset (use training data for better EWE coverage)
+    print(f"\n📊 Loading training dataset for analysis...")
     data_dir = os.path.expanduser(cfg['data']['data_dir'])
     
     full_dataset = RawFireDataset(data_dir,
                                    sequence_length=cfg['data']['sequence_length'],
                                    transform=transform)
     
-    # Get validation split
+    # Get training split
     total_samples = len(full_dataset.samples)
     train_size = int(cfg['split']['train'] * total_samples)
-    val_indices = list(range(train_size, total_samples))
+    train_indices = list(range(train_size))
     
-    val_dataset = Subset(full_dataset, val_indices)
+    train_dataset = Subset(full_dataset, train_indices)
     
-    print(f"  ✓ Validation samples: {len(val_dataset)}")
+    print(f"  ✓ Training samples: {len(train_dataset)}")
     
     # Get static channels from first sample
-    first_sample = val_dataset[0]
+    first_sample = train_dataset[0]
     static_channels = first_sample[1].shape[0]
     
     # Create model
@@ -116,7 +116,7 @@ def load_model_and_data(checkpoint_path, config_path, device='cuda'):
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  ✓ Total parameters: {total_params:,}")
     
-    return model, val_dataset, cfg, device
+    return model, train_dataset, cfg, device
 
 
 def main():
