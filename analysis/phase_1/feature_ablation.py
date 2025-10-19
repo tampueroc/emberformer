@@ -85,16 +85,16 @@ def analyze_feature_importance(model, dataset, device, output_dir, num_samples=1
     subset_indices = list(range(min(num_samples, len(dataset))))
     val_subset = Subset(dataset, subset_indices)
     
-    # Static channel names (typical ordering)
+    # Static channel names (landscape features)
     static_channels = [
+        'fuels',
+        'arqueo',
+        'canopy_bulk_density',
+        'canopy_base_height',
         'elevation',
-        'slope', 
-        'aspect',
-        'fuel_load',
-        'vegetation',
-        'canopy_height',
-        'canopy_density',
-        'other'
+        'flora',
+        'paleo',
+        'urban'
     ]
     
     # Get actual number of channels from first sample

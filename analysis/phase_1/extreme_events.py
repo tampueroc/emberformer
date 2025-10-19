@@ -93,10 +93,10 @@ def visualize_extreme_event(model, sample, sample_idx, output_path, device):
             ax.set_title(f'Fire t-{T-i-1}', fontsize=11)
         ax.axis('off')
     
-    # Row 2: Terrain features
-    terrain_names = ['Elevation', 'Slope', 'Aspect', 'Fuel Load']
-    cmaps = ['terrain', 'YlOrRd', 'twilight', 'YlGn']
-    for i in range(min(4, static.shape[0])):
+    # Row 2: Landscape features
+    terrain_names = ['Fuels', 'Arqueo', 'Canopy Bulk Density', 'Canopy Base Height', 'Elevation', 'Flora', 'Paleo', 'Urban']
+    cmaps = ['YlGn', 'copper', 'Greens', 'YlOrBr', 'terrain', 'YlGn', 'bone', 'Greys']
+    for i in range(min(8, static.shape[0])):
         ax = fig.add_subplot(gs[1, i])
         cmap = cmaps[i] if i < len(cmaps) else 'viridis'
         im = ax.imshow(static[i].numpy(), cmap=cmap, interpolation='bilinear')
