@@ -22,8 +22,29 @@ class ThesisOutputManager:
     - Markdown analysis reports
     """
     
-    def __init__(self, output_dir: str = "analysis/phase_1/outputs"):
-        self.output_dir = Path(output_dir)
+    def __init__(
+        self, 
+        phase: int = 1, 
+        use_timestamp: bool = True,
+        custom_run_name: Optional[str] = None
+    ):
+        """
+        Args:
+            phase: Phase number (1, 2, 3, etc.)
+            use_timestamp: Whether to create timestamped run directory
+            custom_run_name: Optional custom name for this run (overrides timestamp)
+        """
+        base_dir = Path(f"results/phase_{phase}")
+        
+        if custom_run_name:
+            run_dir = custom_run_name
+        elif use_timestamp:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            run_dir = timestamp
+        else:
+            run_dir = "latest"
+        
+        self.output_dir = base_dir / run_dir
         self.figures_dir = self.output_dir / "figures"
         self.tables_dir = self.output_dir / "tables"
         self.metrics_dir = self.output_dir / "metrics"
@@ -31,6 +52,8 @@ class ThesisOutputManager:
         
         for d in [self.figures_dir, self.tables_dir, self.metrics_dir, self.reports_dir]:
             d.mkdir(parents=True, exist_ok=True)
+        
+        print(f"✓ Output directory: {self.output_dir}")
     
     def save_figure(
         self, 

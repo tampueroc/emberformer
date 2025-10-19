@@ -357,7 +357,17 @@ if __name__ == "__main__":
     model = EmberFormerDINO.load_from_checkpoint("checkpoints/best_model.pt")
     # dataloader = ...
     
-    output_manager = ThesisOutputManager()
+    # Create output manager with timestamp
+    output_manager = ThesisOutputManager(
+        phase=1, 
+        use_timestamp=True  # Creates results/phase_1/{timestamp}/
+    )
+    
+    # Or use custom run name
+    # output_manager = ThesisOutputManager(
+    #     phase=1,
+    #     custom_run_name="frozen_dino_baseline"
+    # )
     
     # Run analysis
     # run_attention_entropy_analysis(
