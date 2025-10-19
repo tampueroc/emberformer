@@ -86,19 +86,26 @@ def extract_dino_attention_entropy(
     
     def get_attention_hook(layer_idx):
         def hook(module, input, output):
-            # DINO returns (output, attention_weights)
-            if isinstance(output, tuple) and len(output) == 2:
+            # HuggingFace attention returns tuple: (context_layer, attention_probs)
+            # attention_probs is [B, num_heads, N, N]
+            if isinstance(output, tuple) and len(output) >= 2:
+                # In HF transformers, attention weights are the second element
                 attn = output[1]  # [B, num_heads, N, N]
-                attention_weights[layer_idx] = attn.detach()
+                if attn is not None:
+                    attention_weights[layer_idx] = attn.detach()
         return hook
     
     # Register hooks on DINO fire encoder attention blocks
     hooks = []
     if hasattr(model, 'fire_encoder') and hasattr(model.fire_encoder, 'dino'):
-        # DINO model structure: model.fire_encoder.dino.encoder.layer[i]
+        # Enable attention output in DINO config
+        model.fire_encoder.dino.config.output_attentions = True
+        
+        # DINO model structure: model.fire_encoder.dino.encoder.layer[i].attention
         for i, block in enumerate(model.fire_encoder.dino.encoder.layer):
             if hasattr(block, 'attention'):
-                hook = block.attention.register_forward_hook(get_attention_hook(i))
+                # Hook the attention module's forward
+                hook = block.attention.attention.register_forward_hook(get_attention_hook(i))
                 hooks.append(hook)
     
     # Forward pass

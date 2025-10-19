@@ -216,10 +216,10 @@ def main():
     print("=" * 70)
     print(f"\nResults saved to: {output_manager.output_dir}")
     print("\nDirectory structure:")
-    print(f"  - {output_manager.figures_dir.relative_to(Path.cwd())}/")
-    print(f"  - {output_manager.tables_dir.relative_to(Path.cwd())}/")
-    print(f"  - {output_manager.metrics_dir.relative_to(Path.cwd())}/")
-    print(f"  - {output_manager.reports_dir.relative_to(Path.cwd())}/")
+    print(f"  - {output_manager.figures_dir}/")
+    print(f"  - {output_manager.tables_dir}/")
+    print(f"  - {output_manager.metrics_dir}/")
+    print(f"  - {output_manager.reports_dir}/")
     print("\n" + "=" * 70 + "\n")
 
 
