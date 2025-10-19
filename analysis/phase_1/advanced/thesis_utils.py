@@ -127,13 +127,16 @@ class ThesisOutputManager:
         """
         metrics_path = self.metrics_dir / f"{name}_metrics.json"
         
+        # Convert metrics to JSON-serializable format
+        metrics_serializable = self._make_json_serializable(metrics)
+        
         output = {
             "analysis_name": name,
             "timestamp": datetime.now().isoformat(),
             "model_checkpoint": model_checkpoint,
             "dataset": dataset,
             "method": method,
-            "metrics": metrics,
+            "metrics": metrics_serializable,
             "interpretation": interpretation
         }
         
@@ -142,6 +145,23 @@ class ThesisOutputManager:
         
         print(f"✓ Saved metrics: {metrics_path}")
         return metrics_path
+    
+    def _make_json_serializable(self, obj: Any) -> Any:
+        """Recursively convert objects to JSON-serializable types"""
+        if isinstance(obj, dict):
+            return {key: self._make_json_serializable(val) for key, val in obj.items()}
+        elif isinstance(obj, list):
+            return [self._make_json_serializable(item) for item in obj]
+        elif isinstance(obj, (np.integer, np.floating)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.bool_, bool)):
+            return bool(obj)
+        elif hasattr(obj, 'item'):  # torch tensors
+            return obj.item()
+        else:
+            return obj
     
     def save_latex_table(
         self, 
