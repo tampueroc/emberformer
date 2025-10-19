@@ -78,8 +78,8 @@ def extract_dino_attention_entropy(
     B, _, H, W, T = fire_seq.shape
     fire_seq = fire_seq.squeeze(1).permute(0, 3, 1, 2).unsqueeze(2)  # [B, T, 1, H, W]
     
-    # Create validity mask (all valid)
-    valid_t = torch.ones(B, T, device=device)
+    # Create validity mask (all valid) - must be boolean
+    valid_t = torch.ones(B, T, device=device, dtype=torch.bool)
     
     # Hook to capture attention weights
     attention_weights = {}
@@ -151,8 +151,8 @@ def extract_temporal_attention_entropy(
     B, _, H, W, T = fire_seq.shape
     fire_seq = fire_seq.squeeze(1).permute(0, 3, 1, 2).unsqueeze(2)
     
-    # Create validity mask (all valid)
-    valid_t = torch.ones(B, T, device=device)
+    # Create validity mask (all valid) - must be boolean
+    valid_t = torch.ones(B, T, device=device, dtype=torch.bool)
     
     # Hook to capture temporal attention
     temporal_attention = []
