@@ -230,8 +230,9 @@ def run_attention_entropy_analysis(
     
     model.eval()
     
-    for batch_idx, batch in enumerate(tqdm(dataloader, total=max_samples)):
-        if batch_idx >= max_samples:
+    total = max_samples if max_samples is not None else len(dataloader)
+    for batch_idx, batch in enumerate(tqdm(dataloader, total=total)):
+        if max_samples is not None and batch_idx >= max_samples:
             break
         
         # Extract DINO attention entropy
