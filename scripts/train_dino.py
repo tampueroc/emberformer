@@ -370,7 +370,7 @@ def train_one_epoch(model, loader, optimizer, scaler, metrics, device, cfg, epoc
     return avg_loss, metric_dict, avg_t_len, step
 
 @torch.no_grad()
-def validate(model, loader, device, cfg, epoch, wandb_run=None):
+def validate(model, loader, device, cfg, epoch, wandb_run=None, global_step=None):
     """Validate the model"""
     model.eval()
 
@@ -455,6 +455,8 @@ def validate(model, loader, device, cfg, epoch, wandb_run=None):
             import wandb
             import numpy as np
             max_images = 4
+            
+            print(f"    Logging validation preview images (epoch {epoch+1})...")
 
             # Create preview images with mask overlays
             preview_imgs = []
@@ -481,7 +483,12 @@ def validate(model, loader, device, cfg, epoch, wandb_run=None):
                     caption=f"Val sample {i} (T={T})"
                 ))
 
-            wandb_run.log({"val/preview": preview_imgs})
+            log_dict = {"val/preview": preview_imgs}
+            if global_step is not None:
+                wandb_run.log(log_dict, step=global_step)
+            else:
+                wandb_run.log(log_dict)
+            print(f"    ✓ Logged {len(preview_imgs)} validation images")
             logged_preview = True
 
     # Compute metrics
@@ -638,6 +645,33 @@ def main():
         static_channels=static_channels,
     ).to(device)
 
+    # Load Phase 1 checkpoint for Phase 2
+    start_epoch = 0
+    if args.phase == 2:
+        phase1_checkpoint = ckpt_dir / "dino_phase1_best.pt"
+        
+        if not phase1_checkpoint.exists():
+            raise FileNotFoundError(
+                f"\n❌ Phase 2 requires Phase 1 checkpoint: {phase1_checkpoint}\n"
+                f"   Please train Phase 1 first:\n"
+                f"   python scripts/train_dino.py --phase 1 --config {args.config}\n"
+            )
+        
+        print(f"🔄 Loading Phase 1 checkpoint: {phase1_checkpoint}")
+        checkpoint = torch.load(phase1_checkpoint, map_location=device)
+        
+        # Load model weights
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        print(f"  ✓ Loaded from epoch {checkpoint['epoch']}")
+        print(f"  ✓ Phase 1 Val F1: {checkpoint['val_f1']:.4f}")
+        print(f"  ✓ Phase 1 Val IoU: {checkpoint['val_iou']:.4f}")
+        print(f"\n🔓 Unfreezing DINO encoder for fine-tuning...")
+        
+        # Verify DINO is unfrozen
+        dino_trainable = sum(p.numel() for p in model.fire_encoder.parameters() if p.requires_grad)
+        print(f"  ✓ DINO trainable params: {dino_trainable:,}\n")
+
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -696,22 +730,28 @@ def main():
         monitor_metric = cfg['train']['early_stopping']['monitor']
         print(f"Early stopping: patience={early_stopping.patience}, monitoring {monitor_metric}")
 
-    # Checkpoint setup
+    # Checkpoint setup (before model creation for Phase 2 loading)
     save_checkpoints = cfg['train'].get('save_checkpoints', True)
+    ckpt_dir = pathlib.Path(cfg['train'].get('checkpoint_dir', 'checkpoints'))
     if save_checkpoints:
-        ckpt_dir = pathlib.Path(cfg['train'].get('checkpoint_dir', 'checkpoints'))
         ckpt_dir.mkdir(exist_ok=True)
-        print(f"Checkpoints: {ckpt_dir}\n")
+        print(f"Checkpoint directory: {ckpt_dir}\n")
 
     # Mixed precision scaler
     scaler = amp.GradScaler()
 
     # Training loop
-    epochs = cfg['train']['epochs']
+    # Use phase-specific epochs
+    if args.phase == 2 and 'finetune' in cfg['train'] and 'epochs' in cfg['train']['finetune']:
+        epochs = cfg['train']['finetune']['epochs']
+        print(f"Using Phase 2 epoch config: {epochs} epochs")
+    else:
+        epochs = cfg['train']['epochs']
+    
     best_f1 = 0.0
     global_step = 0
 
-    print(f"Starting training for {epochs} epochs...\n")
+    print(f"\nStarting Phase {args.phase} training for {epochs} epochs...\n")
 
     for epoch in range(epochs):
         # Train
@@ -722,7 +762,7 @@ def main():
 
         # Validate
         val_loss, val_metric_dict = validate(
-            model, val_loader, device, cfg, epoch, wandb_run
+            model, val_loader, device, cfg, epoch, wandb_run, global_step
         )
 
         # Format loss name for console output
