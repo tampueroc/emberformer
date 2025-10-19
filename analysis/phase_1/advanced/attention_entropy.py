@@ -78,7 +78,8 @@ def extract_dino_attention_entropy(
     B, _, H, W, T = fire_seq.shape
     fire_seq = fire_seq.squeeze(1).permute(0, 3, 1, 2).unsqueeze(2)  # [B, T, 1, H, W]
     
-    B, T = fire_seq.shape[:2]
+    # Create validity mask (all valid)
+    valid_t = torch.ones(B, T, device=device)
     
     # Hook to capture attention weights
     attention_weights = {}
@@ -91,16 +92,16 @@ def extract_dino_attention_entropy(
                 attention_weights[layer_idx] = attn.detach()
         return hook
     
-    # Register hooks on DINO attention blocks
+    # Register hooks on DINO fire encoder attention blocks
     hooks = []
-    if hasattr(model, 'dino_encoder'):
-        for i, block in enumerate(model.dino_encoder.blocks):
+    if hasattr(model, 'fire_encoder'):
+        for i, block in enumerate(model.fire_encoder.model.blocks):
             hook = block.attn.register_forward_hook(get_attention_hook(i))
             hooks.append(hook)
     
     # Forward pass
     with torch.no_grad():
-        _ = model(fire_seq, weather, static)
+        _ = model(fire_seq, static, weather, valid_t)
     
     # Remove hooks
     for hook in hooks:
@@ -148,6 +149,9 @@ def extract_temporal_attention_entropy(
     B, _, H, W, T = fire_seq.shape
     fire_seq = fire_seq.squeeze(1).permute(0, 3, 1, 2).unsqueeze(2)
     
+    # Create validity mask (all valid)
+    valid_t = torch.ones(B, T, device=device)
+    
     # Hook to capture temporal attention
     temporal_attention = []
     
@@ -167,7 +171,7 @@ def extract_temporal_attention_entropy(
     
     # Forward pass
     with torch.no_grad():
-        _ = model(fire_seq, weather, static)
+        _ = model(fire_seq, static, weather, valid_t)
     
     if hook:
         hook.remove()
