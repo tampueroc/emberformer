@@ -42,6 +42,10 @@ def load_model_and_data(checkpoint_path, config_path, device='cuda'):
     print("Loading Phase 1 Model and Data")
     print("=" * 70)
     
+    # Expand paths
+    checkpoint_path = os.path.expanduser(checkpoint_path)
+    config_path = os.path.expanduser(config_path)
+    
     # Load config
     with open(config_path, 'r') as f:
         cfg = yaml.safe_load(f)
