@@ -94,10 +94,12 @@ def extract_dino_attention_entropy(
     
     # Register hooks on DINO fire encoder attention blocks
     hooks = []
-    if hasattr(model, 'fire_encoder'):
-        for i, block in enumerate(model.fire_encoder.model.blocks):
-            hook = block.attn.register_forward_hook(get_attention_hook(i))
-            hooks.append(hook)
+    if hasattr(model, 'fire_encoder') and hasattr(model.fire_encoder, 'dino'):
+        # DINO model structure: model.fire_encoder.dino.encoder.layer[i]
+        for i, block in enumerate(model.fire_encoder.dino.encoder.layer):
+            if hasattr(block, 'attention'):
+                hook = block.attention.register_forward_hook(get_attention_hook(i))
+                hooks.append(hook)
     
     # Forward pass
     with torch.no_grad():
