@@ -35,8 +35,15 @@ from advanced.attention_entropy import run_attention_entropy_analysis
 from advanced.thesis_utils import ThesisOutputManager
 
 
-def load_model_and_data(checkpoint_path, config_path, device='cuda'):
-    """Load trained model and validation dataset"""
+def load_model_and_data(checkpoint_path, config_path, device='cuda', dataset_split='all'):
+    """Load trained model and dataset
+    
+    Args:
+        checkpoint_path: Path to model checkpoint
+        config_path: Path to config file
+        device: Device to load model on
+        dataset_split: Which split to use ('train', 'val', 'test', 'all')
+    """
     
     print("=" * 70)
     print("Loading Phase 1 Model and Data")
@@ -73,25 +80,35 @@ def load_model_and_data(checkpoint_path, config_path, device='cuda'):
     
     transform = ResizeTransform(target_size)
     
-    # Load dataset (use training data for better EWE coverage)
-    print(f"\n📊 Loading training dataset for analysis...")
+    # Load dataset
+    print(f"\n📊 Loading {dataset_split} dataset for analysis...")
     data_dir = os.path.expanduser(cfg['data']['data_dir'])
     
     full_dataset = RawFireDataset(data_dir,
                                    sequence_length=cfg['data']['sequence_length'],
                                    transform=transform)
     
-    # Get training split
+    # Select dataset split
     total_samples = len(full_dataset.samples)
     train_size = int(cfg['split']['train'] * total_samples)
-    train_indices = list(range(train_size))
+    val_size = int(cfg['split']['val'] * total_samples)
     
-    train_dataset = Subset(full_dataset, train_indices)
+    if dataset_split == 'train':
+        indices = list(range(train_size))
+        dataset = Subset(full_dataset, indices)
+    elif dataset_split == 'val':
+        indices = list(range(train_size, train_size + val_size))
+        dataset = Subset(full_dataset, indices)
+    elif dataset_split == 'test':
+        indices = list(range(train_size + val_size, total_samples))
+        dataset = Subset(full_dataset, indices)
+    else:  # 'all'
+        dataset = full_dataset
     
-    print(f"  ✓ Training samples: {len(train_dataset)}")
+    print(f"  ✓ Dataset samples: {len(dataset)}")
     
     # Get static channels from first sample
-    first_sample = train_dataset[0]
+    first_sample = dataset[0]
     static_channels = first_sample[1].shape[0]
     
     # Create model
@@ -116,7 +133,7 @@ def load_model_and_data(checkpoint_path, config_path, device='cuda'):
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  ✓ Total parameters: {total_params:,}")
     
-    return model, train_dataset, cfg, device
+    return model, dataset, cfg, device
 
 
 def main():
@@ -131,8 +148,11 @@ def main():
                        help='Custom run name (default: timestamp)')
     parser.add_argument('--phase', type=int, default=1,
                        help='Phase number for output directory')
-    parser.add_argument('--num-samples', type=int, default=100,
-                       help='Number of samples to analyze')
+    parser.add_argument('--dataset', type=str, default='all',
+                       choices=['train', 'val', 'test', 'all'],
+                       help='Dataset split to use for analysis')
+    parser.add_argument('--num-samples', type=int, default=None,
+                       help='Number of samples to analyze (None = use all)')
     parser.add_argument('--device', type=str, default='cuda',
                        help='Device to run on (cuda or cpu)')
     parser.add_argument('--analyses', type=str, nargs='+',
@@ -159,20 +179,26 @@ def main():
     print("=" * 70 + "\n")
     
     # Load model and data
-    model, val_dataset, cfg, device = load_model_and_data(
-        args.checkpoint, args.config, args.device
+    model, dataset, cfg, device = load_model_and_data(
+        args.checkpoint, args.config, args.device, args.dataset
     )
+    
+    # Limit samples if specified
+    if args.num_samples is not None and args.num_samples < len(dataset):
+        indices = list(range(args.num_samples))
+        dataset = Subset(dataset, indices)
+        print(f"  ℹ️  Using subset of {args.num_samples} samples")
     
     # Create dataloader
     dataloader = DataLoader(
-        val_dataset, 
+        dataset, 
         batch_size=1,  # Process one at a time for analysis
         shuffle=False,
         num_workers=0
     )
     
     # Dataset name for metadata
-    dataset_name = f"validation_set_{len(val_dataset)}_samples"
+    dataset_name = f"{args.dataset}_set_{len(dataset)}_samples"
     
     # Run requested analyses
     results = {}
