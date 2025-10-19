@@ -617,7 +617,17 @@ def main():
     print("Getting first sample to check dimensions...")
     first_sample = train_dataset[0]
     static_channels = first_sample[1].shape[0]
-    print(f"  Static channels: {static_channels}")
+    print(f"  Static channels: {static_channels}\n")
+
+    # Checkpoint setup (MUST BE BEFORE model creation for Phase 2 loading)
+    save_checkpoints = cfg['train'].get('save_checkpoints', True)
+    ckpt_dir = pathlib.Path(cfg['train'].get('checkpoint_dir', 'checkpoints'))
+    ckpt_dir.mkdir(exist_ok=True)  # Always create, even if not saving
+    
+    if save_checkpoints:
+        print(f"Checkpoint directory: {ckpt_dir}")
+    else:
+        print(f"Checkpoint saving disabled (directory: {ckpt_dir})")
 
     # Create model
     print("\nCreating EmberFormerDINO...")
@@ -728,14 +738,7 @@ def main():
             mode=cfg['train']['early_stopping']['mode']
         )
         monitor_metric = cfg['train']['early_stopping']['monitor']
-        print(f"Early stopping: patience={early_stopping.patience}, monitoring {monitor_metric}")
-
-    # Checkpoint setup (before model creation for Phase 2 loading)
-    save_checkpoints = cfg['train'].get('save_checkpoints', True)
-    ckpt_dir = pathlib.Path(cfg['train'].get('checkpoint_dir', 'checkpoints'))
-    if save_checkpoints:
-        ckpt_dir.mkdir(exist_ok=True)
-        print(f"Checkpoint directory: {ckpt_dir}\n")
+        print(f"Early stopping: patience={early_stopping.patience}, monitoring {monitor_metric}\n")
 
     # Mixed precision scaler
     scaler = amp.GradScaler()
