@@ -66,7 +66,9 @@ def visualize_extreme_event(model, sample, sample_idx, output_path, device):
     T = fire_hist.shape[-1]
     
     # Get prediction
-    fire_hist_batch = fire_hist.unsqueeze(0).to(device)
+    # fire_hist is [1, H, W, T] from dataset, need [B, T, 1, H, W] for model
+    fire_hist_permuted = fire_hist.permute(3, 0, 1, 2)  # [T, 1, H, W]
+    fire_hist_batch = fire_hist_permuted.unsqueeze(0).to(device)  # [B, T, 1, H, W]
     static_batch = static.unsqueeze(0).to(device)
     wind_batch = wind.unsqueeze(0).to(device)
     valid_t = torch.ones(1, T, dtype=torch.bool, device=device)

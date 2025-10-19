@@ -26,8 +26,9 @@ def compute_spatial_importance_map(model, sample, device):
     """
     fire_hist, static, wind, target = sample
     
-    # Add batch dimension and enable gradients
-    fire_hist = fire_hist.unsqueeze(0).to(device).requires_grad_(True)
+    # fire_hist is [1, H, W, T] from dataset, need [B, T, 1, H, W] for model
+    fire_hist = fire_hist.permute(3, 0, 1, 2)  # [T, 1, H, W]
+    fire_hist = fire_hist.unsqueeze(0).to(device).requires_grad_(True)  # [B, T, 1, H, W]
     static = static.unsqueeze(0).to(device)
     wind = wind.unsqueeze(0).to(device)
     

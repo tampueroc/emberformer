@@ -32,7 +32,9 @@ def analyze_wind_direction(model, dataset, device, output_dir, num_samples=100):
             fire_hist, static, wind, target = dataset[i]
             
             # Prepare inputs
-            fire_hist_batch = fire_hist.unsqueeze(0).to(device)
+            # fire_hist is [1, H, W, T] from dataset, need [B, T, 1, H, W] for model
+            fire_hist = fire_hist.permute(3, 0, 1, 2)  # [T, 1, H, W]
+            fire_hist_batch = fire_hist.unsqueeze(0).to(device)  # [B, T, 1, H, W]
             static_batch = static.unsqueeze(0).to(device)
             wind_batch = wind.unsqueeze(0).to(device)
             
