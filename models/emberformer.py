@@ -651,8 +651,11 @@ class DinoSpatialEncoder(nn.Module):
                 "Install with: pip install transformers"
             )
         
-        # Load pretrained DINO
-        self.dino = Dinov2Model.from_pretrained(model_name)
+        # Load pretrained DINO with eager attention (needed for attention analysis)
+        self.dino = Dinov2Model.from_pretrained(
+            model_name,
+            attn_implementation='eager'
+        )
         self.d_dino = self.dino.config.hidden_size  # 384 (small), 768 (base)
         self.patch_size = self.dino.config.patch_size  # 14
         
