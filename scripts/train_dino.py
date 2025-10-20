@@ -530,6 +530,7 @@ def main():
 
     # Initialize wandb
     wandb_run = None
+    run_id = None
     if cfg['wandb']['enabled']:
         cfg['wandb']['run_name'] = f"dino-phase{args.phase}-{time.strftime('%m%d-%H%M')}"
         cfg['wandb']['tags'] = cfg['wandb'].get('tags', []) + [f"phase{args.phase}"]
@@ -541,7 +542,11 @@ def main():
         }
 
         wandb_run = init_wandb(cfg=cfg, context=context)
-        print(f"✓ W&B initialized: {wandb_run.name}\n")
+        run_id = wandb_run.id  # Store run_id for checkpoint naming
+        print(f"✓ W&B initialized: {wandb_run.name} (ID: {run_id})\n")
+    else:
+        # Generate run_id even without W&B
+        run_id = time.strftime('%Y%m%d_%H%M%S')
 
     # Load datasets
     data_dir = os.path.expanduser(cfg['data']['data_dir'])
@@ -832,8 +837,13 @@ def main():
         if val_metric_dict['f1'] > best_f1:
             best_f1 = val_metric_dict['f1']
             if save_checkpoints:
-                checkpoint_path = ckpt_dir / f"dino_phase{args.phase}_best.pt"
-                torch.save({
+                # Save with run_id for tracking
+                checkpoint_path = ckpt_dir / f"dino_phase{args.phase}_{run_id}_best.pt"
+                
+                # Also save as latest for easy loading
+                latest_path = ckpt_dir / f"dino_phase{args.phase}_best.pt"
+                
+                checkpoint_data = {
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
@@ -841,8 +851,15 @@ def main():
                     'val_iou': val_metric_dict['iou'],
                     'config': cfg,
                     'phase': args.phase,
-                }, checkpoint_path)
-                print(f"  ✓ Saved best checkpoint: {checkpoint_path}")
+                    'run_id': run_id,
+                    'wandb_run_name': wandb_run.name if wandb_run else None,
+                }
+                
+                torch.save(checkpoint_data, checkpoint_path)
+                torch.save(checkpoint_data, latest_path)  # Overwrite latest
+                
+                print(f"  ✓ Saved checkpoint: {checkpoint_path.name}")
+                print(f"  ✓ Updated latest: {latest_path.name}")
 
         # Early stopping
         if early_stopping:
