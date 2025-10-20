@@ -28,7 +28,7 @@ wandb:
   project: "emberformer"
   entity: "tampueroc-university-of-chile"
   run_name:
-  run_name_template: "{script}-dino-expanding-{time}"
+  run_name_template: "{script}-dino-expanding-t6-{time}"
   tags: ["dino", "expanding-window", "variable-T", "focal-tversky"]
   auto_tags: true
   log_batch_preview: false

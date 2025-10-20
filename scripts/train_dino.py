@@ -539,7 +539,7 @@ def main():
     wandb_run = None
     run_id = None
     if cfg['wandb']['enabled']:
-        cfg['wandb']['run_name'] = f"dino-phase{args.phase}-{time.strftime('%m%d-%H%M')}"
+        cfg['wandb']['run_name'] = None
         cfg['wandb']['tags'] = cfg['wandb'].get('tags', []) + [f"phase{args.phase}"]
 
         context = {
