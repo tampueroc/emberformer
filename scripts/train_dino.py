@@ -513,6 +513,13 @@ def main():
     # Load config
     cfg = load_cfg(args.config)
     device = _pick_device(args.gpu)
+    
+    # Extract config name for checkpoint naming
+    config_name = pathlib.Path(args.config).stem  # e.g., "emberformer_dino_expanding"
+    if config_name.startswith('emberformer_dino_'):
+        config_name = config_name.replace('emberformer_dino_', '')  # e.g., "expanding"
+    else:
+        config_name = config_name
 
     print(f"\n{'='*60}")
     print(f"EmberFormer-DINO Training - Phase {args.phase}")
@@ -665,7 +672,7 @@ def main():
     # Load Phase 1 checkpoint for Phase 2, or custom checkpoint for Phase 3
     start_epoch = 0
     if args.phase == 2 and args.resume is None:
-        phase1_checkpoint = ckpt_dir / "dino_phase1_best.pt"
+        phase1_checkpoint = ckpt_dir / f"dino_phase1_{config_name}_best.pt"
         
         if not phase1_checkpoint.exists():
             raise FileNotFoundError(
@@ -837,11 +844,11 @@ def main():
         if val_metric_dict['f1'] > best_f1:
             best_f1 = val_metric_dict['f1']
             if save_checkpoints:
-                # Save with run_id for tracking
-                checkpoint_path = ckpt_dir / f"dino_phase{args.phase}_{run_id}_best.pt"
+                # Save with config_name and run_id for tracking
+                checkpoint_path = ckpt_dir / f"dino_phase{args.phase}_{config_name}_{run_id}_best.pt"
                 
-                # Also save as latest for easy loading
-                latest_path = ckpt_dir / f"dino_phase{args.phase}_best.pt"
+                # Also save as latest for easy loading (config-specific)
+                latest_path = ckpt_dir / f"dino_phase{args.phase}_{config_name}_best.pt"
                 
                 checkpoint_data = {
                     'epoch': epoch,
