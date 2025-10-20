@@ -7,7 +7,7 @@ global:
 
 data:
   data_dir: "~/data/deep_crown_dataset/organized_spreads"
-  batch_size: 12  # Higher batch size possible with T=5
+  batch_size: 8   # Reduced further for memory safety with T=5
   num_workers: 8
   pin_memory: true
   drop_last: false
@@ -80,7 +80,7 @@ model:
 
 train:
   model: "emberformer_dino_expanding_t5"
-  
+
   epochs: 30
   lr: 1e-4
   weight_decay: 1e-4
