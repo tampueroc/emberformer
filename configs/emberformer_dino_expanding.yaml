@@ -80,7 +80,7 @@ model:
 
 train:
   model: "emberformer_dino_expanding"
-  
+
   # Phase 1: Frozen DINO
   epochs: 30
   lr: 1e-4  # Standard LR for Phase 1
@@ -101,7 +101,7 @@ train:
 
   early_stopping:
     enabled: true
-    patience: 7  # More patience for variable-length training
+    patience: 5
     min_delta: 0.002
     mode: "max"
     monitor: "val/f1"
