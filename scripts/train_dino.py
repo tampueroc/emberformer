@@ -628,8 +628,8 @@ def main():
 
     # Checkpoint setup (MUST BE BEFORE model creation for Phase 2 loading)
     save_checkpoints = cfg['train'].get('save_checkpoints', True)
-    ckpt_dir = pathlib.Path(cfg['train'].get('checkpoint_dir', 'checkpoints'))
-    ckpt_dir.mkdir(exist_ok=True)  # Always create, even if not saving
+    ckpt_dir = pathlib.Path(cfg['train'].get('checkpoint_dir', 'checkpoints')).expanduser()
+    ckpt_dir.mkdir(exist_ok=True, parents=True)  # Always create, even if not saving
     
     if save_checkpoints:
         print(f"Checkpoint directory: {ckpt_dir}")
