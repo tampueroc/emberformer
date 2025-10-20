@@ -14,7 +14,7 @@ import torch.nn as nn
 from torch import amp
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-import torchmetrics
+from torchmetrics.classification import BinaryAccuracy, BinaryPrecision, BinaryRecall, BinaryF1Score, BinaryJaccardIndex
 from tqdm import tqdm
 
 from data import RawFireDataset
@@ -376,11 +376,11 @@ def validate(model, loader, device, cfg, epoch, wandb_run=None, global_step=None
 
     # Create metrics
     metrics = {
-        'acc': torchmetrics.classification.BinaryAccuracy().to(device),
-        'precision': torchmetrics.classification.BinaryPrecision().to(device),
-        'recall': torchmetrics.classification.BinaryRecall().to(device),
-        'f1': torchmetrics.classification.BinaryF1Score().to(device),
-        'iou': torchmetrics.classification.BinaryJaccardIndex().to(device),
+        'acc': BinaryAccuracy().to(device),
+        'precision': BinaryPrecision().to(device),
+        'recall': BinaryRecall().to(device),
+        'f1': BinaryF1Score().to(device),
+        'iou': BinaryJaccardIndex().to(device),
     }
 
     # Loss config
@@ -504,8 +504,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/emberformer_dino.yaml")
     parser.add_argument("--gpu", type=int, default=None)
-    parser.add_argument("--phase", type=int, default=1, choices=[1, 2],
-                       help="Phase 1: frozen DINO, Phase 2: fine-tune DINO")
+    parser.add_argument("--phase", type=int, default=1, choices=[1, 2, 3],
+                       help="Phase 1: frozen DINO, Phase 2: fine-tune DINO, Phase 3: extended training")
+    parser.add_argument("--resume", type=str, default=None,
+                       help="Resume from checkpoint (for Phase 3 with different config)")
     args = parser.parse_args()
 
     # Load config
@@ -655,9 +657,9 @@ def main():
         static_channels=static_channels,
     ).to(device)
 
-    # Load Phase 1 checkpoint for Phase 2
+    # Load Phase 1 checkpoint for Phase 2, or custom checkpoint for Phase 3
     start_epoch = 0
-    if args.phase == 2:
+    if args.phase == 2 and args.resume is None:
         phase1_checkpoint = ckpt_dir / "dino_phase1_best.pt"
         
         if not phase1_checkpoint.exists():
@@ -681,6 +683,23 @@ def main():
         # Verify DINO is unfrozen
         dino_trainable = sum(p.numel() for p in model.fire_encoder.parameters() if p.requires_grad)
         print(f"  ✓ DINO trainable params: {dino_trainable:,}\n")
+    
+    # Resume from custom checkpoint (Phase 3 or experiments)
+    if args.resume is not None:
+        resume_path = Path(args.resume).expanduser()
+        if not resume_path.exists():
+            raise FileNotFoundError(f"\n❌ Resume checkpoint not found: {resume_path}\n")
+        
+        print(f"🔄 Resuming from checkpoint: {resume_path}")
+        checkpoint = torch.load(resume_path, map_location=device)
+        
+        # Load model weights
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        print(f"  ✓ Loaded from epoch {checkpoint['epoch']}")
+        print(f"  ✓ Previous Val F1: {checkpoint.get('val_f1', 'N/A')}")
+        print(f"  ✓ Previous Val IoU: {checkpoint.get('val_iou', 'N/A')}")
+        print(f"\n🚀 Continuing training with new configuration...\n")
 
     # Count parameters
     total_params = sum(p.numel() for p in model.parameters())
@@ -722,11 +741,11 @@ def main():
 
     # Create training metrics
     train_metrics = {
-        'acc': torchmetrics.classification.BinaryAccuracy().to(device),
-        'precision': torchmetrics.classification.BinaryPrecision().to(device),
-        'recall': torchmetrics.classification.BinaryRecall().to(device),
-        'f1': torchmetrics.classification.BinaryF1Score().to(device),
-        'iou': torchmetrics.classification.BinaryJaccardIndex().to(device),
+        'acc': BinaryAccuracy().to(device),
+        'precision': BinaryPrecision().to(device),
+        'recall': BinaryRecall().to(device),
+        'f1': BinaryF1Score().to(device),
+        'iou': BinaryJaccardIndex().to(device),
     }
 
     # Early stopping

@@ -1,12 +1,13 @@
 import os
 import torch
 import json
+from torch.utils.data import Dataset
 from torchvision.io import read_image
 
 from .transforms import LandscapeNormalize, WeatherNormalize
 
 
-class RawFireDataset:
+class RawFireDataset(Dataset):
     """
     Custom PyTorch Dataset for fire state sequences, static landscapes, and wind inputs.
 
@@ -81,21 +82,32 @@ class RawFireDataset:
             cropped = self.landscape_data[:, y:y_, x:x_].values
             cropped_tensor = torch.from_numpy(cropped).float()
 
-            # Build sub-sequences up to `sequence_length`
-            T = min(num_frames, self.sequence_length)
-            if T < 2:
+            # Build expanding window sub-sequences
+            # For each target frame, use all history from start
+            max_T = min(num_frames, self.sequence_length)
+            if max_T < 2:
                 continue
 
-            for start in range(num_frames - T + 1):
-                sub_ids = list(range(start, start + T))
+            # Create expanding windows: T=2, T=3, ..., T=max_T
+            for target_idx in range(1, num_frames):
+                # Use expanding window: all frames from 0 to target_idx-1
+                history_frames = list(range(0, target_idx))
+                
+                # Limit history to sequence_length - 1 (reserve 1 for target)
+                if len(history_frames) > self.sequence_length - 1:
+                    history_frames = history_frames[-(self.sequence_length - 1):]
+                
+                if len(history_frames) == 0:
+                    continue  # Skip if no history
+                
                 self.samples.append({
                     "sequence_id": seq_id,
                     "fire_path": fseq_path,
                     "iso_path": iseq_path,
                     "fire_files": fire_files,
                     "iso_files": iso_files,
-                    "fire_frame_indices": sub_ids[:-1],  # past frames
-                    "iso_target_index": sub_ids[-1],     # next frame (target)
+                    "fire_frame_indices": history_frames,  # expanding history
+                    "iso_target_index": target_idx,         # next frame (target)
                     "landscape": cropped_tensor
                 })
 

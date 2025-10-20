@@ -1,0 +1,123 @@
+# EmberFormer-DINO with Data Augmentation
+# Based on emberformer_dino.yaml with augmentation added
+
+global:
+  seed: 42
+  cudnn_benchmark: true
+
+data:
+  data_dir: "~/data/deep_crown_dataset/organized_spreads"
+  batch_size: 16
+  num_workers: 8
+  pin_memory: true
+  drop_last: false
+  shuffle: true
+  sequence_length: 4
+  use_pixel_data: true
+  resize_to: 406
+  
+  # NEW: Data augmentation
+  augmentation:
+    enabled: true
+    p: 0.5  # 50% chance of augmentation per sample
+
+encoding:
+  fire_channel: 1
+  fire_value: 231
+  isochrone_channel: 1
+  isochrone_value: 231
+
+wandb:
+  enabled: true
+  mode: online
+  project: "emberformer"
+  entity: "tampueroc-university-of-chile"
+  run_name:
+  run_name_template: "{script}-dino-augmented-{time}"
+  tags: ["dino", "augmented", "phase3", "focal-tversky"]
+  auto_tags: true
+  log_batch_preview: false
+  max_preview_images: 2
+  preview_size: 400
+  watch: false
+  log_artifacts: true
+
+model:
+  dino:
+    model_name: "facebook/dinov2-base"
+    freeze_fire: false  # Fine-tune from Phase 2
+    freeze_static: true
+
+  temporal:
+    d_model: 256
+    nhead: 8
+    num_layers: 4
+    dim_feedforward: 1024
+    dropout: 0.1
+    max_seq_len: 32
+
+  fusion:
+    d_wind: 32
+    type: "concat"
+
+  spatial:
+    decoder_type: "simple"
+    hidden_channels: 128
+    base_channels: 48
+
+  refinement:
+    patch_size: 14
+    base_channels: 32
+
+  metrics:
+    pred_thresh: 0.5
+    target_thresh: 0.05
+    pos_weight: "auto"
+
+  loss:
+    type: "focal_tversky"
+    focal_weight: 0.7
+    tversky_weight: 0.3
+    focal_alpha: 0.25
+    focal_gamma: 2.0
+    tversky_alpha: 0.3
+    tversky_beta: 0.7
+
+train:
+  model: "emberformer_dino_augmented"
+  
+  # Phase 3: Fine-tune with augmentation (load Phase 2 checkpoint)
+  epochs: 15
+  lr: 5e-5  # Lower LR for fine-tuning from Phase 2
+  weight_decay: 1e-4
+  grad_clip_norm: 1.0
+  
+  # Load Phase 2 checkpoint
+  resume_from: "~/data/emberformer/checkpoints/dino_phase2_best.pt"
+
+  finetune:
+    enabled: true
+    epochs: 15
+    lr: 5e-6  # Very low for DINO
+
+  log_images_every: 1
+  log_metrics_every: 50
+
+  save_checkpoints: true
+  checkpoint_dir: "~/data/emberformer/checkpoints"
+
+  early_stopping:
+    enabled: true
+    patience: 5
+    min_delta: 0.002
+    mode: "max"
+    monitor: "val/f1"
+
+split:
+  train: 0.8
+  val: 0.1
+  test: 0.1
+  seed: 42
+
+static:
+  num_channels: 7
