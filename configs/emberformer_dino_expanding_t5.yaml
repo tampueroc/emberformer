@@ -1,5 +1,5 @@
-# EmberFormer-DINO with Expanding Window Training
-# Uses all possible subsequences: T=2,3,4,5,6 for variable-length training
+# EmberFormer-DINO with Expanding Window (T=5)
+# More memory-efficient than T=6, still good temporal context
 
 global:
   seed: 42
@@ -7,12 +7,12 @@ global:
 
 data:
   data_dir: "~/data/deep_crown_dataset/organized_spreads"
-  batch_size: 8   # Reduced for T=6 memory requirements (was 16)
+  batch_size: 12  # Higher batch size possible with T=5
   num_workers: 8
   pin_memory: true
   drop_last: false
   shuffle: true
-  sequence_length: 6  # Maximum window size (will create windows 2,3,4,5,6)
+  sequence_length: 5  # Maximum window size (creates windows 2,3,4,5)
   use_pixel_data: true
   resize_to: 406
 
@@ -28,8 +28,8 @@ wandb:
   project: "emberformer"
   entity: "tampueroc-university-of-chile"
   run_name:
-  run_name_template: "{script}-dino-expanding-{time}"
-  tags: ["dino", "expanding-window", "variable-T", "focal-tversky"]
+  run_name_template: "{script}-dino-expanding-t5-{time}"
+  tags: ["dino", "expanding-window", "t=5", "focal-tversky"]
   auto_tags: true
   log_batch_preview: false
   max_preview_images: 2
@@ -40,7 +40,7 @@ wandb:
 model:
   dino:
     model_name: "facebook/dinov2-base"
-    freeze_fire: true   # Will be overridden by --phase argument
+    freeze_fire: true
     freeze_static: true
 
   temporal:
@@ -79,19 +79,17 @@ model:
     tversky_beta: 0.7
 
 train:
-  model: "emberformer_dino_expanding"
+  model: "emberformer_dino_expanding_t5"
   
-  # Phase 1: Frozen DINO
   epochs: 30
-  lr: 1e-4  # Standard LR for Phase 1
+  lr: 1e-4
   weight_decay: 1e-4
   grad_clip_norm: 1.0
 
-  # Phase 2: Fine-tune DINO
   finetune:
     enabled: true
     epochs: 20
-    lr: 1e-5  # Lower for DINO fine-tuning
+    lr: 1e-5
 
   log_images_every: 1
   log_metrics_every: 50
@@ -101,7 +99,7 @@ train:
 
   early_stopping:
     enabled: true
-    patience: 7  # More patience for variable-length training
+    patience: 7
     min_delta: 0.002
     mode: "max"
     monitor: "val/f1"
