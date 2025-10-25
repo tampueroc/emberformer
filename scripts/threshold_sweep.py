@@ -71,7 +71,24 @@ def load_checkpoint(checkpoint_path, model, device):
     print(f"\n📦 Loading checkpoint: {checkpoint_path}")
     
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Check if there's a config mismatch and try to infer static_channels
+    try:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    except RuntimeError as e:
+        if "static_encoder.input_projection.weight" in str(e):
+            # Extract the checkpoint's static channel count
+            ckpt_static_shape = checkpoint['model_state_dict']['static_encoder.input_projection.weight'].shape
+            ckpt_static_channels = ckpt_static_shape[1]
+            print(f"  ⚠️  Static channel mismatch detected!")
+            print(f"  ⚠️  Checkpoint uses {ckpt_static_channels} static channels, rebuilding model...")
+            raise ValueError(
+                f"Model architecture mismatch: checkpoint was trained with {ckpt_static_channels} static channels, "
+                f"but config specifies {model.static_encoder.input_projection.weight.shape[1]}. "
+                f"Please update config static.num_channels to {ckpt_static_channels}"
+            )
+        else:
+            raise
     
     print(f"  ✓ Loaded from epoch {checkpoint.get('epoch', 'unknown')}")
     if 'val_f1' in checkpoint:
@@ -257,7 +274,20 @@ def main():
     thresholds = np.arange(args.threshold_min, args.threshold_max + args.threshold_step/2, args.threshold_step)
     print(f"🎚️  Thresholds: {len(thresholds)} values from {args.threshold_min} to {args.threshold_max}")
     
-    # Build model
+    # Load checkpoint first to infer architecture
+    checkpoint_path = os.path.expanduser(args.checkpoint)
+    print(f"\n📦 Inspecting checkpoint: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    # Infer static_channels from checkpoint
+    ckpt_static_shape = checkpoint['model_state_dict']['static_encoder.input_projection.weight'].shape
+    static_channels_actual = ckpt_static_shape[1]
+    
+    if static_channels_actual != cfg['static']['num_channels']:
+        print(f"  ⚠️  Config says {cfg['static']['num_channels']} static channels, checkpoint has {static_channels_actual}")
+        print(f"  ✓  Using {static_channels_actual} from checkpoint")
+    
+    # Build model with correct architecture
     print("\n🏗️  Building model...")
     model = EmberFormerDINO(
         dino_model=cfg['model']['dino']['model_name'],
@@ -269,13 +299,16 @@ def main():
         dropout=cfg['model']['temporal']['dropout'],
         spatial_hidden=cfg['model']['spatial']['hidden_channels'],
         patch_size=cfg['model']['refinement']['patch_size'],
-        static_channels=cfg['static']['num_channels'],
+        static_channels=static_channels_actual,  # Use checkpoint's value
     ).to(device)
     print(f"  ✓ Total parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    # Load checkpoint
-    checkpoint_path = os.path.expanduser(args.checkpoint)
-    model = load_checkpoint(checkpoint_path, model, device)
+    # Load checkpoint weights
+    model.load_state_dict(checkpoint['model_state_dict'])
+    print(f"  ✓ Loaded from epoch {checkpoint.get('epoch', 'unknown')}")
+    if 'val_f1' in checkpoint:
+        print(f"  ✓ Checkpoint Val F1: {checkpoint['val_f1']:.4f}")
+    del checkpoint  # Free memory
     
     # Load validation dataset
     print("\n📂 Loading validation dataset...")
