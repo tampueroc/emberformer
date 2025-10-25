@@ -314,15 +314,25 @@ def main():
     print("\n📂 Loading validation dataset...")
     data_dir = os.path.expanduser(cfg['data']['data_dir'])
     sequence_length = cfg['data']['sequence_length']
+    target_size = cfg['data']['resize_to']
     
-    # Load full dataset
-    from data.augmentations import ValidationAugmentation
-    val_transform = ValidationAugmentation(cfg['data']['resize_to'])
+    # Define resize transform (matches train_dino.py)
+    import torchvision.transforms.functional as TF
+    
+    class ResizeTransform:
+        def __init__(self, size):
+            self.size = size
+        def __call__(self, img):
+            return TF.resize(img, [self.size, self.size],
+                           interpolation=TF.InterpolationMode.BILINEAR,
+                           antialias=True)
+    
+    transform = ResizeTransform(target_size)
     
     full_dataset = RawFireDataset(
         data_dir,
         sequence_length=sequence_length,
-        transform=val_transform,
+        transform=transform,
     )
     
     # Split dataset
