@@ -314,18 +314,28 @@ def main():
     print("\n📂 Loading validation dataset...")
     data_dir = os.path.expanduser(cfg['data']['data_dir'])
     sequence_length = cfg['data']['sequence_length']
-    resize_to = cfg['data'].get('resize_to', None)
     
-    dataset = RawFireDataset(
-        root_dir=data_dir,
-        split='val',
+    # Load full dataset
+    from data.augmentations import ValidationAugmentation
+    val_transform = ValidationAugmentation(cfg['data']['resize_to'])
+    
+    full_dataset = RawFireDataset(
+        data_dir,
         sequence_length=sequence_length,
-        use_pixel_data=True,
-        resize_to=resize_to,
-        fire_channel=cfg['encoding']['fire_channel'],
-        fire_value=cfg['encoding']['fire_value'],
-        isochrone_channel=cfg['encoding']['isochrone_channel'],
-        isochrone_value=cfg['encoding']['isochrone_value'],
+        transform=val_transform,
+    )
+    
+    # Split dataset
+    from torch.utils.data import random_split
+    train_size = int(cfg['split']['train'] * len(full_dataset))
+    val_size = int(cfg['split']['val'] * len(full_dataset))
+    test_size = len(full_dataset) - train_size - val_size
+    
+    generator = torch.Generator().manual_seed(cfg['split']['seed'])
+    _, dataset, _ = random_split(
+        full_dataset, 
+        [train_size, val_size, test_size],
+        generator=generator
     )
     
     batch_size = args.batch_size if args.batch_size else cfg['data']['batch_size']
