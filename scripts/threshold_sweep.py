@@ -31,8 +31,39 @@ import wandb
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from data import RawFireDataset, collate_raw_sequences
+from data import RawFireDataset
 from models import EmberFormerDINO
+
+
+def collate_raw_dino(batch):
+    """
+    Collate function for DINO training with variable-length sequences
+    """
+    T_max = max(item[0].shape[-1] for item in batch)
+    B = len(batch)
+
+    _, H, W, _ = batch[0][0].shape
+    Cs = batch[0][1].shape[0]
+
+    fire_hist = torch.zeros((B, T_max, 1, H, W), dtype=batch[0][0].dtype)
+    static_batch = torch.zeros((B, Cs, H, W), dtype=batch[0][1].dtype)
+    wind_batch = torch.zeros((B, T_max, 2), dtype=batch[0][2].dtype)
+    targets = torch.zeros((B, 1, H, W), dtype=batch[0][3].dtype)
+    valid_t = torch.zeros((B, T_max), dtype=torch.bool)
+
+    for i, (fire_seq, static, wind, target) in enumerate(batch):
+        T = fire_seq.shape[-1]
+        
+        # Left-pad fire sequence: [1, H, W, T] -> [T_max, 1, H, W]
+        fire_seq = fire_seq.permute(3, 0, 1, 2)  # [T, 1, H, W]
+        fire_hist[i, -T:] = fire_seq
+        
+        static_batch[i] = static
+        wind_batch[i, -T:] = wind
+        targets[i] = target
+        valid_t[i, -T:] = True
+
+    return fire_hist, static_batch, wind_batch, targets, valid_t
 
 
 def load_checkpoint(checkpoint_path, model, device):
@@ -64,13 +95,16 @@ def collect_predictions(model, dataloader, device, target_thresh=0.05):
     print(f"\n🔮 Running inference on {len(dataloader)} batches...")
     
     with torch.no_grad():
-        for batch_idx, (X_batch, y_batch) in enumerate(dataloader):
+        for batch_idx, batch in enumerate(dataloader):
+            # Unpack batch from collate_raw_dino
+            fire_hist, static, wind_hist, targets, valid_t = batch
+            
             # Move to device
-            fire_hist = X_batch["fire_hist"].to(device)      # [B, T, H, W]
-            static = X_batch["static"].to(device)            # [B, Cs, H, W]
-            wind_hist = X_batch["wind_hist"].to(device)      # [B, T, 2]
-            valid_t = X_batch["valid_t"].to(device)          # [B, T]
-            targets = y_batch.to(device)                     # [B, 1, H, W]
+            fire_hist = fire_hist.to(device)    # [B, T, 1, H, W]
+            static = static.to(device)          # [B, Cs, H, W]
+            wind_hist = wind_hist.to(device)    # [B, T, 2]
+            valid_t = valid_t.to(device)        # [B, T]
+            targets = targets.to(device)        # [B, 1, H, W]
             
             # Forward pass
             logits = model(fire_hist, static, wind_hist, valid_t)  # [B, 1, H, W]
@@ -257,7 +291,7 @@ def main():
         shuffle=False,
         num_workers=4,
         pin_memory=True,
-        collate_fn=collate_raw_sequences,
+        collate_fn=collate_raw_dino,
     )
     
     print(f"  ✓ Validation samples: {len(dataset)}")
