@@ -259,7 +259,18 @@ def main():
     
     # Build model
     print("\n🏗️  Building model...")
-    model = EmberFormerDINO(cfg).to(device)
+    model = EmberFormerDINO(
+        dino_model=cfg['model']['dino']['model_name'],
+        freeze_dino=cfg['model']['dino']['freeze_fire'],
+        d_model=cfg['model']['temporal']['d_model'],
+        nhead=cfg['model']['temporal']['nhead'],
+        num_layers=cfg['model']['temporal']['num_layers'],
+        dim_feedforward=cfg['model']['temporal']['dim_feedforward'],
+        dropout=cfg['model']['temporal']['dropout'],
+        spatial_hidden=cfg['model']['spatial']['hidden_channels'],
+        patch_size=cfg['model']['refinement']['patch_size'],
+        static_channels=cfg['static']['num_channels'],
+    ).to(device)
     print(f"  ✓ Total parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     # Load checkpoint
