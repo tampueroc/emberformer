@@ -110,115 +110,461 @@ EmberFormer-DINO has three components:
 
 ---
 
-## Analysis 1: Gradient-Based Spatial Importance
+## Analysis 1: Grad-CAM Saliency Maps (Pais et al. 2020)
+
+**Methodology:** Following Pais et al. (2020), we apply Grad-CAM to identify which spatial regions in the model's internal representations drive fire spread predictions.
+
+**Target Layer:** `model.refinement_decoder.output_conv` - the final convolutional layer before pixel-level predictions (406×406 resolution).
+
+### Grad-CAM Theory
+
+Grad-CAM computes class activation maps by:
+1. Forward pass: compute predictions `y_c` (fire spread logits)
+2. Backward: compute gradients `∂y_c / ∂A^k` where `A^k` are activations at target layer
+3. Global average pooling of gradients: `α_k = (1/Z) Σ_i Σ_j (∂y_c / ∂A^k_{ij})`
+4. Weighted combination: `L_Grad-CAM = ReLU(Σ_k α_k · A^k)`
+5. Upsample to input resolution if needed
 
 ### Implementation
 
-Create `scripts/analyze_spatial_importance.py`:
+Create `scripts/analyze_gradcam.py`:
 
 ```python
 import torch
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import numpy as np
-import os
 from pathlib import Path
 from data import RawFireDataset
 from models.emberformer import EmberFormerDINO
 
 # Ensure results directory exists
-Path('results').mkdir(exist_ok=True)
+Path('results/gradcam').mkdir(parents=True, exist_ok=True)
 
-def compute_spatial_importance_map(model, sample, device='cuda'):
+class GradCAM:
     """
-    Compute spatial importance using gradient-based attribution
+    Grad-CAM implementation following Pais et al. (2020)
     
-    Shows: Which input pixels influence predictions most
+    Computes importance of each pixel in the last convolutional layer
+    by evaluating gradients of predicted class with respect to activations.
     """
-    fire_hist, static, wind, target = sample
+    def __init__(self, model, target_layer):
+        """
+        Args:
+            model: EmberFormerDINO model
+            target_layer: layer to compute Grad-CAM for (e.g., model.refinement_decoder.output_conv)
+        """
+        self.model = model
+        self.target_layer = target_layer
+        self.gradients = None
+        self.activations = None
+        
+        # Register hooks
+        self.forward_hook = target_layer.register_forward_hook(self._forward_hook)
+        self.backward_hook = target_layer.register_full_backward_hook(self._backward_hook)
     
-    # Add batch dimension and enable gradients
-    fire_hist = fire_hist.unsqueeze(0).to(device).requires_grad_(True)
-    static = static.unsqueeze(0).to(device)
-    wind = wind.unsqueeze(0).to(device)
+    def _forward_hook(self, module, input, output):
+        """Capture activations during forward pass"""
+        self.activations = output.detach()
     
-    B, T, C, H, W = fire_hist.shape
-    valid_t = torch.ones(B, T, dtype=torch.bool, device=device)
+    def _backward_hook(self, module, grad_input, grad_output):
+        """Capture gradients during backward pass"""
+        self.gradients = grad_output[0].detach()
     
-    model.eval()
+    def __call__(self, fire_hist, static, wind, valid_t):
+        """
+        Compute Grad-CAM heatmap
+        
+        Args:
+            fire_hist: [B, T, 1, H, W] fire history
+            static: [B, Cs, H, W] static features
+            wind: [B, T, 2] wind vectors
+            valid_t: [B, T] temporal validity mask
+        
+        Returns:
+            cam: [B, H, W] Grad-CAM heatmap (normalized to [0, 1])
+        """
+        self.model.eval()
+        
+        # Forward pass
+        logits = self.model(fire_hist, static, wind, valid_t)  # [B, 1, H, W]
+        
+        # Backward pass (sum of all predictions)
+        self.model.zero_grad()
+        loss = logits.sum()
+        loss.backward()
+        
+        # Compute Grad-CAM weights (alpha_k)
+        # Average gradients across spatial dimensions
+        weights = self.gradients.mean(dim=(2, 3), keepdim=True)  # [B, C, 1, 1]
+        
+        # Weighted combination of activations
+        cam = (weights * self.activations).sum(dim=1, keepdim=True)  # [B, 1, H, W]
+        
+        # Apply ReLU (only positive contributions)
+        cam = F.relu(cam)
+        
+        # Normalize to [0, 1]
+        cam = cam.squeeze(1)  # [B, H, W]
+        for i in range(cam.shape[0]):
+            cam[i] = (cam[i] - cam[i].min()) / (cam[i].max() - cam[i].min() + 1e-8)
+        
+        return cam
     
-    # Forward pass
-    logits = model(fire_hist, static, wind, valid_t)
-    
-    # Backward on output sum
-    loss = logits.sum()
-    loss.backward()
-    
-    # Gradient magnitude as importance
-    importance = fire_hist.grad[0].abs()  # [T, 1, H, W]
-    
-    # Normalize per timestep
-    importance_norm = []
-    for t in range(T):
-        imp_t = importance[t, 0]
-        imp_t = (imp_t - imp_t.min()) / (imp_t.max() - imp_t.min() + 1e-8)
-        importance_norm.append(imp_t)
-    
-    importance_norm = torch.stack(importance_norm)
-    
-    return importance_norm.cpu()
+    def remove_hooks(self):
+        """Clean up hooks"""
+        self.forward_hook.remove()
+        self.backward_hook.remove()
 
-def visualize_spatial_importance(model, dataset, num_samples=5, output_dir='results/spatial_importance'):
+
+def visualize_gradcam(model, dataset, num_samples=10, output_dir='results/gradcam'):
     """
-    Visualize spatial importance for multiple samples
-    """
-    import os
-    os.makedirs(output_dir, exist_ok=True)
+    Generate Grad-CAM visualizations for validation samples
     
-    for sample_idx in range(num_samples):
+    Args:
+        model: trained EmberFormerDINO
+        dataset: RawFireDataset
+        num_samples: number of samples to visualize
+        output_dir: directory to save results
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+    # Initialize Grad-CAM
+    gradcam = GradCAM(model, model.refinement_decoder.output_conv)
+    
+    device = next(model.parameters()).device
+    
+    for sample_idx in range(min(num_samples, len(dataset))):
         fire_hist, static, wind, target = dataset[sample_idx]
         
-        # Get importance maps
-        importance = compute_spatial_importance_map(
-            model, (fire_hist, static, wind, target)
-        )
+        # Add batch dimension
+        fire_hist_batch = fire_hist.unsqueeze(0).to(device)
+        static_batch = static.unsqueeze(0).to(device)
+        wind_batch = wind.unsqueeze(0).to(device)
         
-        T = fire_hist.shape[-1]
+        B, T, C, H, W = fire_hist_batch.shape
+        valid_t = torch.ones(B, T, dtype=torch.bool, device=device)
+        
+        # Compute Grad-CAM
+        with torch.enable_grad():
+            cam = gradcam(fire_hist_batch, static_batch, wind_batch, valid_t)
+        
+        cam_np = cam[0].cpu().numpy()  # [H, W]
+        
+        # Get prediction
+        with torch.no_grad():
+            logits = model(fire_hist_batch, static_batch, wind_batch, valid_t)
+            pred = torch.sigmoid(logits[0, 0]).cpu().numpy()
         
         # Visualize
-        fig, axes = plt.subplots(2, T, figsize=(4*T, 8))
+        fig, axes = plt.subplots(2, T + 2, figsize=(4*(T+2), 8))
         
+        # Row 1: Fire history
         for t in range(T):
-            # Top row: Original fire frame
-            axes[0, t].imshow(fire_hist[0, :, :, t].numpy(), cmap='hot')
-            axes[0, t].set_title(f'Fire t-{T-t-1}')
+            fire_t = fire_hist[t, 0].cpu().numpy()
+            axes[0, t].imshow(fire_t, cmap='hot', vmin=0, vmax=1)
+            axes[0, t].set_title(f't-{T-t-1}', fontsize=10)
             axes[0, t].axis('off')
-            
-            # Bottom row: Importance map
-            im = axes[1, t].imshow(importance[t].numpy(), cmap='viridis')
-            axes[1, t].set_title(f'Importance t-{T-t-1}')
+        
+        # Row 1: Target and prediction
+        axes[0, T].imshow(target.cpu().numpy(), cmap='hot', vmin=0, vmax=1)
+        axes[0, T].set_title('Target', fontsize=10)
+        axes[0, T].axis('off')
+        
+        axes[0, T+1].imshow(pred, cmap='hot', vmin=0, vmax=1)
+        axes[0, T+1].set_title('Prediction', fontsize=10)
+        axes[0, T+1].axis('off')
+        
+        # Row 2: Grad-CAM overlays
+        for t in range(T):
+            fire_t = fire_hist[t, 0].cpu().numpy()
+            axes[1, t].imshow(fire_t, cmap='gray', alpha=0.7)
+            im = axes[1, t].imshow(cam_np, cmap='jet', alpha=0.5, vmin=0, vmax=1)
+            axes[1, t].set_title(f'Grad-CAM t-{T-t-1}', fontsize=10)
             axes[1, t].axis('off')
         
-        plt.colorbar(im, ax=axes[1, -1])
-        plt.suptitle(f'Sample {sample_idx}: Spatial Importance Over Time', fontsize=14)
+        # Row 2: Grad-CAM on target and prediction
+        axes[1, T].imshow(target.cpu().numpy(), cmap='gray', alpha=0.7)
+        axes[1, T].imshow(cam_np, cmap='jet', alpha=0.5, vmin=0, vmax=1)
+        axes[1, T].set_title('Grad-CAM on Target', fontsize=10)
+        axes[1, T].axis('off')
+        
+        axes[1, T+1].imshow(pred, cmap='gray', alpha=0.7)
+        im = axes[1, T+1].imshow(cam_np, cmap='jet', alpha=0.5, vmin=0, vmax=1)
+        axes[1, T+1].set_title('Grad-CAM on Pred', fontsize=10)
+        axes[1, T+1].axis('off')
+        
+        # Colorbar
+        fig.colorbar(im, ax=axes[1, -1], fraction=0.046, pad=0.04)
+        
+        plt.suptitle(f'Sample {sample_idx}: Grad-CAM Saliency Map', fontsize=14, fontweight='bold')
         plt.tight_layout()
-        plt.savefig(f'{output_dir}/spatial_importance_sample_{sample_idx}.png', 
-                   dpi=150, bbox_inches='tight')
+        plt.savefig(f'{output_dir}/gradcam_sample_{sample_idx}.png', dpi=150, bbox_inches='tight')
         plt.close()
         
-        print(f"✓ Saved sample {sample_idx}")
+        print(f"✓ Saved Grad-CAM for sample {sample_idx}")
+    
+    gradcam.remove_hooks()
+    print(f"\n✓ Grad-CAM analysis complete. Results saved to {output_dir}/")
+
 
 # Usage
 if __name__ == '__main__':
-    model = load_model('checkpoints/dino_phase1_best.pt')
-    dataset = RawFireDataset('~/data/deep_crown_dataset/organized_spreads', 
-                             sequence_length=4)
+    from scripts.train_phase1 import load_model
     
-    visualize_spatial_importance(model, dataset, num_samples=10)
+    # Load model
+    model = load_model('checkpoints/dino_phase1_best.pt')
+    
+    # Load validation dataset
+    dataset = RawFireDataset('~/data/deep_crown_dataset/organized_spreads', 
+                             sequence_length=4, split='val')
+    
+    # Generate Grad-CAM visualizations
+    visualize_gradcam(model, dataset, num_samples=20)
 ```
+
+**Interpretation Guide:**
+- **Hot regions (red/yellow):** High importance - these features strongly drive predictions
+- **Cool regions (blue):** Low importance - these features have minimal impact
+- Overlay on fire frames shows which spatial locations the model "looks at" when predicting spread
 
 ---
 
-## Analysis 2: Temporal Importance Analysis
+## Analysis 2: Guided Grad-CAM (Pais et al. 2020)
+
+**Methodology:** Guided Grad-CAM combines the spatial localization of Grad-CAM with the fine-grained details of Guided Backpropagation to produce high-resolution pixel-level saliency maps.
+
+**Purpose:** Shows exactly which input pixels drive fire spread predictions with pixel-perfect precision.
+
+### Guided Backpropagation Theory
+
+Guided Backpropagation modifies standard backpropagation by only propagating positive gradients through ReLU layers:
+- Standard backprop: passes gradients through all activations
+- Guided backprop: suppresses negative gradients at ReLU layers
+- Result: highlights pixels that contribute positively to the prediction
+
+### Guided Grad-CAM = Grad-CAM ⊙ Guided Backprop
+
+1. Compute Grad-CAM heatmap (coarse, 406×406)
+2. Compute Guided Backpropagation (fine, 406×406)
+3. Element-wise multiply (Hadamard product)
+4. Result: High-resolution saliency with correct spatial localization
+
+### Implementation
+
+Add to `scripts/analyze_gradcam.py`:
+
+```python
+class GuidedBackprop:
+    """
+    Guided Backpropagation for high-resolution saliency maps
+    
+    Modifies ReLU backward pass to only propagate positive gradients
+    """
+    def __init__(self, model):
+        self.model = model
+        self.gradient = None
+        self.forward_relu_outputs = []
+        self.handles = []
+        
+        # Register hooks on all ReLU layers
+        self._register_hooks()
+    
+    def _register_hooks(self):
+        """Register hooks on all ReLU layers in the model"""
+        def forward_hook(module, input, output):
+            self.forward_relu_outputs.append(output)
+        
+        def backward_hook(module, grad_input, grad_output):
+            # Guided backprop: only pass positive gradients
+            forward_output = self.forward_relu_outputs.pop()
+            forward_output[forward_output > 0] = 1
+            
+            # Element-wise multiply with incoming gradient
+            positive_grad_output = torch.clamp(grad_output[0], min=0.0)
+            new_grad_input = positive_grad_output * forward_output
+            
+            return (new_grad_input,)
+        
+        # Find all ReLU layers
+        for module in self.model.modules():
+            if isinstance(module, torch.nn.ReLU):
+                handle_forward = module.register_forward_hook(forward_hook)
+                handle_backward = module.register_full_backward_hook(backward_hook)
+                self.handles.append(handle_forward)
+                self.handles.append(handle_backward)
+    
+    def __call__(self, fire_hist, static, wind, valid_t):
+        """
+        Compute guided backpropagation saliency map
+        
+        Returns:
+            saliency: [B, T, 1, H, W] gradient w.r.t. input fire frames
+        """
+        # Ensure input requires gradient
+        fire_hist = fire_hist.clone().requires_grad_(True)
+        
+        self.model.eval()
+        
+        # Forward pass
+        logits = self.model(fire_hist, static, wind, valid_t)
+        
+        # Backward pass
+        self.model.zero_grad()
+        loss = logits.sum()
+        loss.backward()
+        
+        # Get gradient w.r.t. input
+        saliency = fire_hist.grad.abs()  # [B, T, 1, H, W]
+        
+        return saliency
+    
+    def remove_hooks(self):
+        """Clean up hooks"""
+        for handle in self.handles:
+            handle.remove()
+
+
+def compute_guided_gradcam(gradcam, guided_backprop, fire_hist, static, wind, valid_t):
+    """
+    Combine Grad-CAM and Guided Backpropagation
+    
+    Returns:
+        guided_gradcam: [B, T, H, W] high-resolution saliency per timestep
+    """
+    # Compute Grad-CAM (coarse, but spatially accurate)
+    cam = gradcam(fire_hist, static, wind, valid_t)  # [B, H, W]
+    
+    # Compute Guided Backprop (fine-grained, but less spatially accurate)
+    saliency = guided_backprop(fire_hist, static, wind, valid_t)  # [B, T, 1, H, W]
+    saliency = saliency.squeeze(2)  # [B, T, H, W]
+    
+    # Normalize saliency per timestep
+    B, T, H, W = saliency.shape
+    for b in range(B):
+        for t in range(T):
+            s = saliency[b, t]
+            saliency[b, t] = (s - s.min()) / (s.max() - s.min() + 1e-8)
+    
+    # Combine: element-wise multiply Grad-CAM with each timestep's saliency
+    # Grad-CAM is shared across timesteps (global importance)
+    cam_expanded = cam.unsqueeze(1).expand(-1, T, -1, -1)  # [B, T, H, W]
+    
+    guided_gradcam = cam_expanded * saliency  # [B, T, H, W]
+    
+    # Normalize again
+    for b in range(B):
+        for t in range(T):
+            gg = guided_gradcam[b, t]
+            guided_gradcam[b, t] = (gg - gg.min()) / (gg.max() - gg.min() + 1e-8)
+    
+    return guided_gradcam
+
+
+def visualize_guided_gradcam(model, dataset, num_samples=10, output_dir='results/guided_gradcam'):
+    """
+    Generate Guided Grad-CAM visualizations
+    
+    Shows pixel-level importance for each input timestep
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+    # Initialize methods
+    gradcam = GradCAM(model, model.refinement_decoder.output_conv)
+    guided_backprop = GuidedBackprop(model)
+    
+    device = next(model.parameters()).device
+    
+    for sample_idx in range(min(num_samples, len(dataset))):
+        fire_hist, static, wind, target = dataset[sample_idx]
+        
+        # Add batch dimension
+        fire_hist_batch = fire_hist.unsqueeze(0).to(device)
+        static_batch = static.unsqueeze(0).to(device)
+        wind_batch = wind.unsqueeze(0).to(device)
+        
+        B, T, C, H, W = fire_hist_batch.shape
+        valid_t = torch.ones(B, T, dtype=torch.bool, device=device)
+        
+        # Compute Guided Grad-CAM
+        with torch.enable_grad():
+            guided_gradcam_maps = compute_guided_gradcam(
+                gradcam, guided_backprop,
+                fire_hist_batch, static_batch, wind_batch, valid_t
+            )  # [B, T, H, W]
+        
+        gg_np = guided_gradcam_maps[0].cpu().detach().numpy()  # [T, H, W]
+        
+        # Get prediction
+        with torch.no_grad():
+            logits = model(fire_hist_batch, static_batch, wind_batch, valid_t)
+            pred = torch.sigmoid(logits[0, 0]).cpu().numpy()
+        
+        # Visualize
+        fig, axes = plt.subplots(3, T + 1, figsize=(4*(T+1), 12))
+        
+        # Row 1: Fire history
+        for t in range(T):
+            fire_t = fire_hist[t, 0].cpu().numpy()
+            axes[0, t].imshow(fire_t, cmap='hot', vmin=0, vmax=1)
+            axes[0, t].set_title(f't-{T-t-1}', fontsize=10)
+            axes[0, t].axis('off')
+        
+        axes[0, T].imshow(pred, cmap='hot', vmin=0, vmax=1)
+        axes[0, T].set_title('Prediction', fontsize=10)
+        axes[0, T].axis('off')
+        
+        # Row 2: Guided Grad-CAM per timestep
+        for t in range(T):
+            im = axes[1, t].imshow(gg_np[t], cmap='jet', vmin=0, vmax=1)
+            axes[1, t].set_title(f'Saliency t-{T-t-1}', fontsize=10)
+            axes[1, t].axis('off')
+        
+        # Average saliency
+        avg_saliency = gg_np.mean(axis=0)
+        im = axes[1, T].imshow(avg_saliency, cmap='jet', vmin=0, vmax=1)
+        axes[1, T].set_title('Avg Saliency', fontsize=10)
+        axes[1, T].axis('off')
+        
+        # Row 3: Overlay on fire frames
+        for t in range(T):
+            fire_t = fire_hist[t, 0].cpu().numpy()
+            axes[2, t].imshow(fire_t, cmap='gray', alpha=0.7)
+            im = axes[2, t].imshow(gg_np[t], cmap='jet', alpha=0.5, vmin=0, vmax=1)
+            axes[2, t].set_title(f'Overlay t-{T-t-1}', fontsize=10)
+            axes[2, t].axis('off')
+        
+        # Overlay on prediction
+        axes[2, T].imshow(pred, cmap='gray', alpha=0.7)
+        im = axes[2, T].imshow(avg_saliency, cmap='jet', alpha=0.5, vmin=0, vmax=1)
+        axes[2, T].set_title('Overlay Pred', fontsize=10)
+        axes[2, T].axis('off')
+        
+        # Colorbar
+        fig.colorbar(im, ax=axes[2, -1], fraction=0.046, pad=0.04)
+        
+        plt.suptitle(f'Sample {sample_idx}: Guided Grad-CAM (Pixel-Level Saliency)', 
+                    fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(f'{output_dir}/guided_gradcam_sample_{sample_idx}.png', dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"✓ Saved Guided Grad-CAM for sample {sample_idx}")
+    
+    gradcam.remove_hooks()
+    guided_backprop.remove_hooks()
+    print(f"\n✓ Guided Grad-CAM analysis complete. Results saved to {output_dir}/")
+```
+
+**Interpretation Guide:**
+- **Saliency maps show pixel-level importance per timestep**
+- Hot pixels (red/yellow) in frame t-i strongly influence predictions
+- Compare across timesteps: which historical frames matter most?
+- Overlay shows: model focuses on fire boundaries, active fronts, spread direction
+
+---
+
+## Analysis 3: Temporal Importance Analysis
 
 ### Implementation
 
