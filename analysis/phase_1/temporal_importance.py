@@ -5,11 +5,11 @@ Measures which timesteps in the fire history are most important for predictions.
 """
 
 import torch
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # type: ignore
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
-import seaborn as sns
+import seaborn as sns  # type: ignore
 
 
 def compute_temporal_importance(model, sample, device):

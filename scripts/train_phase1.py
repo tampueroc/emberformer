@@ -1,7 +1,7 @@
 import os, time, argparse, yaml, inspect, torch, pathlib
 import torch.nn as nn
 from torch.utils.data import DataLoader
-import torchmetrics
+from torchmetrics.classification import BinaryAccuracy, BinaryPrecision, BinaryRecall, BinaryF1Score, BinaryJaccardIndex
 
 from data import RawFireDataset, collate_fn
 from models import CopyLast, ConvHead2D, Tiny3D
@@ -133,11 +133,11 @@ def main():
     )
 
     # Metrics (deep-crowns set + IoU)
-    acc  = torchmetrics.classification.BinaryAccuracy().to(device)
-    prec = torchmetrics.classification.BinaryPrecision().to(device)
-    rec  = torchmetrics.classification.BinaryRecall().to(device)
-    f1   = torchmetrics.classification.BinaryF1Score().to(device)
-    iou  = torchmetrics.classification.BinaryJaccardIndex().to(device)
+    acc  = BinaryAccuracy().to(device)
+    prec = BinaryPrecision().to(device)
+    rec  = BinaryRecall().to(device)
+    f1   = BinaryF1Score().to(device)
+    iou  = BinaryJaccardIndex().to(device)
 
     step = 0
     shapes_logged = False

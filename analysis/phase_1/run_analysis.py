@@ -28,11 +28,11 @@ from torch.utils.data import DataLoader, Subset
 import torchvision.transforms.functional as TF
 
 # Import analysis modules
-from spatial_importance import analyze_spatial_importance
-from temporal_importance import analyze_temporal_importance
-from feature_ablation import analyze_feature_importance
-from wind_analysis import analyze_wind_direction
-from extreme_events import analyze_extreme_events
+from .spatial_importance import analyze_spatial_importance
+from .temporal_importance import analyze_temporal_importance
+from .feature_ablation import analyze_feature_importance
+from .wind_analysis import analyze_wind_direction
+from .extreme_events import analyze_extreme_events
 
 def load_model_and_data(checkpoint_path, config_path, device='cuda'):
     """Load trained model and validation dataset"""

@@ -128,8 +128,8 @@ def main():
             ln = ds.landscape_normalizer
             if getattr(ln, "landscape_min", None) is not None:
                 run.log({
-                    "landscape/min_per_band": wandb.Histogram(ln.landscape_min),
-                    "landscape/max_per_band": wandb.Histogram(ln.landscape_max),
+                    "landscape/min_per_band": wandb.Histogram(ln.landscape_min),  # type: ignore
+                    "landscape/max_per_band": wandb.Histogram(ln.landscape_max),  # type: ignore
                 })
 
         # Batch preview (first N)

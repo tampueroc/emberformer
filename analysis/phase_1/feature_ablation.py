@@ -6,7 +6,8 @@ the impact on model performance.
 """
 
 import torch
-import matplotlib.pyplot as plt
+from torch.utils.data import Dataset
+import matplotlib.pyplot as plt  # type: ignore
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
@@ -117,7 +118,7 @@ def analyze_feature_importance(model, dataset, device, output_dir, num_samples=1
         print(f"\n2. Ablating channel {i}: {channel_name}...")
         
         # Create wrapper dataset that zeros channel i
-        class AblatedDataset:
+        class AblatedDataset(Dataset):
             def __init__(self, dataset, channel_idx):
                 self.dataset = dataset
                 self.channel_idx = channel_idx

@@ -82,7 +82,7 @@ def unpatchify_2d(tokens: torch.Tensor, patch: int) -> torch.Tensor:
     up = up.squeeze(0)
     return up[0] if c1 else up
 
-def valid_token_mask_from_footprint(H: int, W: int, patch: int, *, pad_bottom: int, pad_right: int) -> torch.BoolTensor:
+def valid_token_mask_from_footprint(H: int, W: int, patch: int, *, pad_bottom: int, pad_right: int) -> torch.Tensor:
     """
     Build a [Ph,Pw] boolean mask where True means the token is fully inside original (pre-pad) extent.
     """

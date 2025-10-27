@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import amp
 from torch.utils.data import DataLoader
-import torchmetrics
+from torchmetrics.classification import BinaryAccuracy, BinaryPrecision, BinaryRecall, BinaryF1Score, BinaryJaccardIndex
 from tqdm import tqdm
 
 from data import RawFireDataset, collate_fn
@@ -169,11 +169,11 @@ def main():
     # Metrics (PIXEL space)
     def _make_metrics():
         return dict(
-            acc  = torchmetrics.classification.BinaryAccuracy().to(device),
-            prec = torchmetrics.classification.BinaryPrecision().to(device),
-            rec  = torchmetrics.classification.BinaryRecall().to(device),
-            f1   = torchmetrics.classification.BinaryF1Score().to(device),
-            iou  = torchmetrics.classification.BinaryJaccardIndex().to(device),
+            acc  = BinaryAccuracy().to(device),
+            prec = BinaryPrecision().to(device),
+            rec  = BinaryRecall().to(device),
+            f1   = BinaryF1Score().to(device),
+            iou  = BinaryJaccardIndex().to(device),
         )
     Mtr = _make_metrics()
     Mva = _make_metrics()

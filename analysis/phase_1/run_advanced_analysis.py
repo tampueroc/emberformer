@@ -31,8 +31,8 @@ from torch.utils.data import DataLoader, Subset
 import torchvision.transforms.functional as TF
 
 # Import advanced analysis modules
-from advanced.attention_entropy import run_attention_entropy_analysis
-from advanced.thesis_utils import ThesisOutputManager
+from .advanced.attention_entropy import run_attention_entropy_analysis
+from .advanced.thesis_utils import ThesisOutputManager
 
 
 def load_model_and_data(checkpoint_path, config_path, device='cuda', dataset_split='all'):

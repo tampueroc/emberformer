@@ -33,7 +33,7 @@ class LandscapeNormalize:
         Returns:
             xarray.DataArray: The normalized landscape data (channels first).
         """
-        with rioxarray.open_rasterio(landscape_path) as src:
+        with rioxarray.open_rasterio(landscape_path) as src:  # type: ignore
             # Replace no-data with -1
             data = src.where(src != self.no_data_value, -1)
             # Compute min/max per channel

@@ -5,7 +5,7 @@ import torch.nn as nn
 from torch import amp
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-import torchmetrics
+from torchmetrics.classification import BinaryAccuracy, BinaryPrecision, BinaryRecall, BinaryF1Score, BinaryJaccardIndex
 
 from data import TokenFireDataset
 from models import UNetS
@@ -253,11 +253,11 @@ def main():
     # torchmetrics (PIXEL space)
     def _make_metrics():
         return dict(
-            acc  = torchmetrics.classification.BinaryAccuracy().to(device),
-            prec = torchmetrics.classification.BinaryPrecision().to(device),
-            rec  = torchmetrics.classification.BinaryRecall().to(device),
-            f1   = torchmetrics.classification.BinaryF1Score().to(device),
-            iou  = torchmetrics.classification.BinaryJaccardIndex().to(device),
+            acc  = BinaryAccuracy().to(device),
+            prec = BinaryPrecision().to(device),
+            rec  = BinaryRecall().to(device),
+            f1   = BinaryF1Score().to(device),
+            iou  = BinaryJaccardIndex().to(device),
         )
     Mtr = _make_metrics()   # pixel-space train metrics
     Mva = _make_metrics()   # pixel-space val metrics

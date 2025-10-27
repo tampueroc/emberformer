@@ -6,7 +6,7 @@ directional alignment of predictions with wind direction.
 """
 
 import torch
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # type: ignore
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
