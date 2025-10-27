@@ -211,9 +211,13 @@ def visualize_gradcam(model, dataset, num_samples=10, output_dir='results/gradca
     
     Args:
         model: trained EmberFormerDINO
-        dataset: RawFireDataset
+        dataset: RawFireDataset (images already resized to 406×406)
         num_samples: number of samples to visualize
         output_dir: directory to save results
+    
+    Note:
+        Dataset applies resize transform (400→406) for DINO compatibility.
+        Grad-CAM output is 406×406, matching the input fire frames perfectly.
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     
@@ -392,7 +396,13 @@ def visualize_guided_gradcam(model, dataset, num_samples=10, output_dir='results
 
 
 def load_model(checkpoint_path, device='cuda'):
-    """Load trained EmberFormerDINO model from checkpoint"""
+    """
+    Load trained EmberFormerDINO model from checkpoint
+    
+    Note:
+        Model expects 406×406 inputs (resized from 400×400 for DINO patch compatibility).
+        Ensure dataset uses resize_to=406 in config.
+    """
     # Load config
     config_path = Path('configs/emberformer_dino.yaml')
     if not config_path.exists():
@@ -458,14 +468,32 @@ def main():
     print(f"\nLoading model from {args.checkpoint}...")
     model = load_model(args.checkpoint, device=device)
     
-    # Load dataset
+    # Load dataset with resize transform (must match model's expected input size)
     print(f"\nLoading {args.split} dataset from {args.data_root}...")
+    
+    # Get resize size from config
+    with open('configs/emberformer_dino.yaml', 'r') as f:
+        cfg = yaml.safe_load(f)
+    resize_to = cfg['data'].get('resize_to', 406)
+    
+    # Create resize transform
+    import torchvision.transforms.functional as TF
+    class ResizeTransform:
+        def __init__(self, size):
+            self.size = size
+        def __call__(self, img):
+            return TF.resize(img, [self.size, self.size],
+                           interpolation=TF.InterpolationMode.BILINEAR,
+                           antialias=True)
+    
+    transform = ResizeTransform(resize_to)
+    
     dataset = RawFireDataset(
         args.data_root, 
         sequence_length=args.sequence_length,
-        split=args.split
+        transform=transform
     )
-    print(f"Dataset size: {len(dataset)} samples")
+    print(f"Dataset size: {len(dataset)} samples (resized to {resize_to}×{resize_to})")
     
     # Run analysis
     if args.method in ['gradcam', 'both']:
