@@ -415,8 +415,8 @@ def main():
     parser.add_argument('--data_root', type=str, 
                        default='~/data/deep_crown_dataset/organized_spreads',
                        help='Path to dataset root')
-    parser.add_argument('--num_samples', type=int, default=100,
-                       help='Number of samples to analyze')
+    parser.add_argument('--num_samples', type=int, default=-1,
+                       help='Number of samples to analyze (-1 = all samples in split)')
     parser.add_argument('--importance_threshold', type=int, default=99,
                        help='Percentile threshold for important pixels (99 = top 1%)')
     parser.add_argument('--extreme_threshold', type=int, default=99,
@@ -478,8 +478,12 @@ def main():
         importance_threshold=args.importance_threshold
     )
     
+    # Determine number of samples
+    num_samples = len(dataset) if args.num_samples == -1 else args.num_samples
+    print(f"Analyzing {num_samples} samples from {args.split} split\n")
+    
     # Collect data
-    analyzer.collect_samples(dataset, num_samples=args.num_samples)
+    analyzer.collect_samples(dataset, num_samples=num_samples)
     
     # Build hypervolume
     print("\n" + "="*60)
