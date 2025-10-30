@@ -165,6 +165,7 @@ class GradCAMHypervolume:
             batch_fire = batch_fire.to(self.device)
             batch_static = batch_static.to(self.device)
             batch_wind = batch_wind.to(self.device)
+            batch_valid_t = batch_valid_t.to(self.device)
             
             B = batch_fire.shape[0]
             
