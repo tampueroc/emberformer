@@ -165,14 +165,17 @@ class GradCAMHypervolume:
     
     def build_hypervolume(self, extreme_threshold=99, feature_subset=None):
         """
-        Build convex hull hypervolume of environmental conditions
+        Build convex hull hypervolume for EXTREME fires only
+        
+        Following Pais et al. methodology: focus on most severe cases to identify
+        the environmental envelope associated with extreme fire conditions.
         
         Args:
             extreme_threshold: Percentile for extreme fires (99 = top 1% intensity)
             feature_subset: List of features to use (default: all static + wind)
         
         Returns:
-            dict with hypervolume statistics
+            dict with hypervolume statistics for extreme fires only
         """
         if len(self.all_data) == 0:
             raise ValueError("No data collected. Run collect_samples() first.")
@@ -209,69 +212,53 @@ class GradCAMHypervolume:
         
         print(f"  Using {len(feature_subset)} features: {feature_subset}")
         
-        # Separate extreme vs normal fires
+        # Filter for EXTREME fires only (top 1% or user-specified percentile)
         if 'fire_intensity' in df.columns:
             extreme_threshold_val = np.percentile(df['fire_intensity'], extreme_threshold)
             extreme_mask = df['fire_intensity'] > extreme_threshold_val
             
             X_extreme = X[extreme_mask]
-            X_normal = X[~extreme_mask]
             
-            print(f"  Extreme fires (>{extreme_threshold}th percentile): {X_extreme.shape[0]} pixels")
-            print(f"  Normal fires: {X_normal.shape[0]} pixels")
+            print(f"\n  Filtering for extreme fires (>{extreme_threshold}th percentile):")
+            print(f"    Total pixels collected: {X.shape[0]}")
+            print(f"    Extreme fire pixels: {X_extreme.shape[0]}")
+            print(f"    Intensity threshold: {extreme_threshold_val:.4f}")
             
-            # Validate sufficient extreme samples
+            # Validate sufficient samples
             min_samples = len(feature_subset) + 1  # Need n+1 points for n-dimensional hull
             if X_extreme.shape[0] < min_samples:
                 print(f"\n⚠️  ERROR: Not enough extreme fire samples!")
                 print(f"   Need at least {min_samples} samples for {len(feature_subset)}-D hypervolume")
                 print(f"   Only found {X_extreme.shape[0]} extreme samples")
                 print(f"\n   Try:")
-                print(f"   - Lower --extreme_threshold (e.g., 95 instead of 99)")
+                print(f"   - Lower --extreme_threshold (e.g., 95 or 90)")
                 print(f"   - Increase --num_samples")
-                print(f"   - Use all samples without extreme/normal split")
                 raise ValueError(f"Insufficient extreme samples: {X_extreme.shape[0]} < {min_samples}")
         else:
+            # No intensity data - use all pixels
             X_extreme = X
-            X_normal = None
-            print(f"  Total pixels: {X.shape[0]}")
+            print(f"  Using all pixels (no intensity filtering): {X.shape[0]}")
         
-        # Compute convex hull for extreme fires
+        # Compute convex hull for EXTREME fires only
         # Use QJ option to add small random noise (handles coplanar/degenerate data)
+        print(f"\n  Computing convex hull...")
         try:
             hull_extreme = ConvexHull(X_extreme, qhull_options='QJ')
             volume_extreme = hull_extreme.volume
-            print(f"  Extreme fire hypervolume: {volume_extreme:.4e}")
+            print(f"  ✓ Extreme fire hypervolume: {volume_extreme:.6e}")
+            print(f"  ✓ Hull simplices: {len(hull_extreme.simplices)}")
+            print(f"  ✓ Hull vertices: {len(hull_extreme.vertices)}")
         except Exception as e:
             print(f"  ⚠️  Could not compute convex hull: {e}")
             volume_extreme = None
             hull_extreme = None
         
-        # Compute convex hull for normal fires
-        volume_normal = None
-        hull_normal = None
-        if X_normal is not None and len(X_normal) > len(feature_subset):
-            try:
-                hull_normal = ConvexHull(X_normal, qhull_options='QJ')
-                volume_normal = hull_normal.volume
-                print(f"  Normal fire hypervolume: {volume_normal:.4e}")
-                
-                if volume_extreme is not None and volume_normal is not None:
-                    ratio = volume_extreme / volume_normal
-                    print(f"  Volume ratio (extreme/normal): {ratio:.3f}")
-            except Exception as e:
-                print(f"  ⚠️  Could not compute normal fire hull: {e}")
-        
         return {
             'features': feature_subset,
-            'n_extreme': X_extreme.shape[0] if X_extreme is not None else 0,
-            'n_normal': X_normal.shape[0] if X_normal is not None else 0,
-            'volume_extreme': float(volume_extreme) if volume_extreme is not None else None,
-            'volume_normal': float(volume_normal) if volume_normal is not None else None,
-            'hull_extreme': hull_extreme,
-            'hull_normal': hull_normal,
+            'n_extreme': X_extreme.shape[0],
+            'volume': float(volume_extreme) if volume_extreme is not None else None,
+            'hull': hull_extreme,
             'X_extreme': X_extreme,
-            'X_normal': X_normal,
         }
     
     def visualize_hypervolume_2d(self, feature_x, feature_y, output_dir='results/hypervolume'):
@@ -291,26 +278,19 @@ class GradCAMHypervolume:
             print(f"⚠️  Features {feature_x} or {feature_y} not found in data")
             return
         
-        # Separate extreme vs normal
+        # Filter for extreme fires only
         if 'fire_intensity' in df.columns:
             threshold = np.percentile(df['fire_intensity'], 99)
-            extreme_mask = df['fire_intensity'] > threshold
-            
-            df_extreme = df[extreme_mask]
-            df_normal = df[~extreme_mask]
+            df_extreme = df[df['fire_intensity'] > threshold]
         else:
             df_extreme = df
-            df_normal = None
         
         # Plot
         fig, ax = plt.subplots(figsize=(10, 8))
         
-        if df_normal is not None:
-            ax.scatter(df_normal[feature_x], df_normal[feature_y], 
-                      c='lightblue', alpha=0.3, s=10, label='Normal fires')
-        
         ax.scatter(df_extreme[feature_x], df_extreme[feature_y],
-                  c='red', alpha=0.6, s=20, label='Extreme fires (top 1%)')
+                  c='red', alpha=0.6, s=30, edgecolors='darkred', linewidth=0.5,
+                  label='Extreme fires (top 1%)')
         
         ax.set_xlabel(feature_x, fontsize=12)
         ax.set_ylabel(feature_y, fontsize=12)
@@ -327,7 +307,7 @@ class GradCAMHypervolume:
     
     def visualize_feature_distributions(self, output_dir='results/hypervolume'):
         """
-        Visualize distributions of environmental features for extreme vs normal fires
+        Visualize distributions of environmental features for extreme fires
         """
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
@@ -339,13 +319,12 @@ class GradCAMHypervolume:
         
         # Check if we have intensity data
         if 'fire_intensity' not in df.columns:
-            print("⚠️  No fire_intensity data, skipping extreme/normal comparison")
-            return
-        
-        # Separate extreme vs normal
-        threshold = np.percentile(df['fire_intensity'], 99)
-        df_extreme = df[df['fire_intensity'] > threshold]
-        df_normal = df[df['fire_intensity'] <= threshold]
+            print("⚠️  No fire_intensity data, showing all pixels")
+            df_extreme = df
+        else:
+            # Filter for extreme fires only
+            threshold = np.percentile(df['fire_intensity'], 99)
+            df_extreme = df[df['fire_intensity'] > threshold]
         
         # Plot distributions
         n_features = len(features)
@@ -358,21 +337,26 @@ class GradCAMHypervolume:
         for i, feature in enumerate(features):
             ax = axes[i]
             
-            # Plot histograms
-            ax.hist(df_normal[feature], bins=30, alpha=0.5, label='Normal', color='blue', density=True)
-            ax.hist(df_extreme[feature], bins=30, alpha=0.5, label='Extreme (top 1%)', color='red', density=True)
+            # Plot histogram for extreme fires only
+            ax.hist(df_extreme[feature], bins=30, alpha=0.7, color='darkred', edgecolor='black', density=True)
+            
+            # Add statistics
+            mean_val = df_extreme[feature].mean()
+            median_val = df_extreme[feature].median()
+            ax.axvline(mean_val, color='blue', linestyle='--', linewidth=2, label=f'Mean: {mean_val:.3f}')
+            ax.axvline(median_val, color='green', linestyle='--', linewidth=2, label=f'Median: {median_val:.3f}')
             
             ax.set_xlabel(feature, fontsize=10)
             ax.set_ylabel('Density', fontsize=10)
-            ax.set_title(f'{feature} Distribution', fontsize=12)
-            ax.legend()
+            ax.set_title(f'{feature} (Extreme Fires)', fontsize=12)
+            ax.legend(fontsize=8)
             ax.grid(alpha=0.3)
         
         # Hide unused subplots
         for i in range(n_features, len(axes)):
             axes[i].axis('off')
         
-        plt.suptitle('Environmental Feature Distributions: Extreme vs Normal Fires', 
+        plt.suptitle('Environmental Feature Distributions: Extreme Fire Conditions (Top 1%)', 
                     fontsize=16, fontweight='bold')
         plt.tight_layout()
         plt.savefig(f'{output_dir}/feature_distributions.png', dpi=150, bbox_inches='tight')
