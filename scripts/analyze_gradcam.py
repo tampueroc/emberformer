@@ -262,7 +262,7 @@ def visualize_gradcam(model, dataset, num_samples=10, output_dir='results/gradca
             axes[0, t].axis('off')
         
         # Row 1: Target and prediction
-        axes[0, T].imshow(target.cpu().numpy(), cmap='hot', vmin=0, vmax=1)
+        axes[0, T].imshow(target[0].cpu().numpy(), cmap='hot', vmin=0, vmax=1)
         axes[0, T].set_title('Target', fontsize=10)
         axes[0, T].axis('off')
         
@@ -279,7 +279,7 @@ def visualize_gradcam(model, dataset, num_samples=10, output_dir='results/gradca
             axes[1, t].axis('off')
         
         # Row 2: Grad-CAM on target and prediction
-        axes[1, T].imshow(target.cpu().numpy(), cmap='gray', alpha=0.7)
+        axes[1, T].imshow(target[0].cpu().numpy(), cmap='gray', alpha=0.7)
         axes[1, T].imshow(cam_np, cmap='jet', alpha=0.5, vmin=0, vmax=1)
         axes[1, T].set_title('Grad-CAM on Target', fontsize=10)
         axes[1, T].axis('off')
