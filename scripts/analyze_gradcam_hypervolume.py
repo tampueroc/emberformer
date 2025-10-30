@@ -128,40 +128,90 @@ class GradCAMHypervolume:
             'threshold': float(threshold),
         }
     
-    def collect_samples(self, dataset, num_samples=100, compute_intensity=True):
+    def collect_samples(self, dataset, num_samples=100, compute_intensity=True, batch_size=16):
         """
-        Collect environmental data from multiple samples
+        Collect environmental data from multiple samples with batching
         
         Args:
-            dataset: RawFireDataset
+            dataset: RawFireDataset or Subset
             num_samples: Number of samples to analyze
             compute_intensity: Whether to compute fire intensity metric
+            batch_size: Batch size for faster GPU processing
         """
-        print(f"Collecting environmental data from {num_samples} samples...")
+        from torch.utils.data import DataLoader
+        from scripts.train_dino import collate_raw_dino
         
-        for sample_idx in range(min(num_samples, len(dataset))):
-            fire_hist, static, wind, target = dataset[sample_idx]
-            
-            # Compute fire intensity (total burned pixels as proxy for severity)
-            if compute_intensity:
-                # Use absolute burned area, not ratio (better separation)
-                fire_intensity = target.sum().item()
-            else:
-                fire_intensity = None
-            
-            # Extract important pixels
-            result = self.extract_important_pixels(
-                (fire_hist, static, wind, target),
-                fire_intensity=fire_intensity
-            )
-            
-            if result is not None:
-                self.all_data.extend(result['pixels'])
-            
-            if (sample_idx + 1) % 10 == 0:
-                print(f"  Processed {sample_idx + 1}/{num_samples} samples, {len(self.all_data)} pixels collected")
+        print(f"Collecting environmental data from {num_samples} samples (batch_size={batch_size})...")
         
-        print(f"\n✓ Collected {len(self.all_data)} important pixels from {num_samples} samples")
+        # Create subset if needed
+        from torch.utils.data import Subset
+        if num_samples < len(dataset):
+            indices = list(range(num_samples))
+            dataset_subset = Subset(dataset, indices)
+        else:
+            dataset_subset = dataset
+        
+        # Create dataloader with batching
+        loader = DataLoader(
+            dataset_subset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=0,  # Keep 0 to avoid pickling issues with GradCAM
+            collate_fn=collate_raw_dino
+        )
+        
+        processed = 0
+        for batch_fire, batch_static, batch_wind, batch_target, batch_valid_t in loader:
+            batch_fire = batch_fire.to(self.device)
+            batch_static = batch_static.to(self.device)
+            batch_wind = batch_wind.to(self.device)
+            
+            B = batch_fire.shape[0]
+            
+            # Compute Grad-CAM for entire batch
+            with torch.enable_grad():
+                cam = self.gradcam(batch_fire, batch_static, batch_wind, batch_valid_t)
+            
+            # Process each sample in batch
+            for b in range(B):
+                fire_intensity = batch_target[b].sum().item() if compute_intensity else None
+                cam_np = cam[b].cpu().numpy()
+                
+                # Get important pixels
+                threshold = np.percentile(cam_np, self.importance_threshold)
+                important_mask = cam_np > threshold
+                y_coords, x_coords = np.where(important_mask)
+                
+                if len(y_coords) == 0:
+                    continue
+                
+                # Extract environmental data
+                static_np = batch_static[b].cpu().numpy()
+                wind_np = batch_wind[b].cpu().numpy()
+                
+                for y, x in zip(y_coords, x_coords):
+                    env_dict = {
+                        'y': int(y),
+                        'x': int(x),
+                        'importance': float(cam_np[y, x]),
+                    }
+                    
+                    for i, name in enumerate(self.static_names[:static_np.shape[0]]):
+                        env_dict[name] = float(static_np[i, y, x])
+                    
+                    env_dict['wind_speed'] = float(wind_np[-1, 0])
+                    env_dict['wind_direction'] = float(wind_np[-1, 1])
+                    
+                    if fire_intensity is not None:
+                        env_dict['fire_intensity'] = float(fire_intensity)
+                    
+                    self.all_data.append(env_dict)
+            
+            processed += B
+            if processed % 100 == 0 or processed == num_samples:
+                print(f"  Processed {processed}/{num_samples} samples, {len(self.all_data)} pixels collected")
+        
+        print(f"\n✓ Collected {len(self.all_data)} important pixels from {processed} samples")
     
     def build_hypervolume(self, extreme_threshold=99, feature_subset=None):
         """
@@ -423,6 +473,8 @@ def main():
                        help='Percentile threshold for extreme fires (99 = top 1%)')
     parser.add_argument('--split', type=str, default='train', choices=['train', 'val', 'test'],
                        help='Dataset split to use (train has most samples)')
+    parser.add_argument('--batch_size', type=int, default=16,
+                       help='Batch size for GPU processing (higher = faster)')
     parser.add_argument('--device', type=str, default='cuda',
                        help='Device to run on')
     
@@ -483,7 +535,7 @@ def main():
     print(f"Analyzing {num_samples} samples from {args.split} split\n")
     
     # Collect data
-    analyzer.collect_samples(dataset, num_samples=num_samples)
+    analyzer.collect_samples(dataset, num_samples=num_samples, batch_size=args.batch_size)
     
     # Build hypervolume
     print("\n" + "="*60)
