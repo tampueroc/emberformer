@@ -131,4 +131,4 @@ split:
 
 # Static channels (terrain features)
 static:
-  num_channels: 7  # Number of static terrain channels
+  num_channels: 8  # Number of static terrain channels (7 terrain + 1 extra from dataset)
