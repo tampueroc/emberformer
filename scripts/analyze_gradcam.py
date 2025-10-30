@@ -229,8 +229,11 @@ def visualize_gradcam(model, dataset, num_samples=10, output_dir='results/gradca
     for sample_idx in range(min(num_samples, len(dataset))):
         fire_hist, static, wind, target = dataset[sample_idx]
         
+        # Same as train_dino.py collate: [1, H, W, T] -> [T, 1, H, W]
+        fire_hist = fire_hist.permute(3, 0, 1, 2)  # [T, 1, H, W]
+        
         # Add batch dimension
-        fire_hist_batch = fire_hist.unsqueeze(0).to(device)
+        fire_hist_batch = fire_hist.unsqueeze(0).to(device)  # [1, T, 1, H, W]
         static_batch = static.unsqueeze(0).to(device)
         wind_batch = wind.unsqueeze(0).to(device)
         
@@ -317,8 +320,11 @@ def visualize_guided_gradcam(model, dataset, num_samples=10, output_dir='results
     for sample_idx in range(min(num_samples, len(dataset))):
         fire_hist, static, wind, target = dataset[sample_idx]
         
+        # Same as train_dino.py collate: [1, H, W, T] -> [T, 1, H, W]
+        fire_hist = fire_hist.permute(3, 0, 1, 2)  # [T, 1, H, W]
+        
         # Add batch dimension
-        fire_hist_batch = fire_hist.unsqueeze(0).to(device)
+        fire_hist_batch = fire_hist.unsqueeze(0).to(device)  # [1, T, 1, H, W]
         static_batch = static.unsqueeze(0).to(device)
         wind_batch = wind.unsqueeze(0).to(device)
         
