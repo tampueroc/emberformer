@@ -122,6 +122,8 @@ class GuidedBackprop:
         def backward_hook(module, grad_input, grad_output):
             # Guided backprop: only pass positive gradients
             forward_output = self.forward_relu_outputs.pop()
+            # Clone to avoid in-place modification error
+            forward_output = forward_output.clone()
             forward_output[forward_output > 0] = 1
             
             # Element-wise multiply with incoming gradient
