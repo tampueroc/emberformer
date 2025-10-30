@@ -406,6 +406,8 @@ def main():
                        help='Percentile threshold for important pixels (99 = top 1%)')
     parser.add_argument('--extreme_threshold', type=int, default=99,
                        help='Percentile threshold for extreme fires (99 = top 1%)')
+    parser.add_argument('--split', type=str, default='train', choices=['train', 'val', 'test'],
+                       help='Dataset split to use (train has most samples)')
     parser.add_argument('--device', type=str, default='cuda',
                        help='Device to run on')
     
@@ -434,7 +436,8 @@ def main():
                            antialias=True)
     
     transform = ResizeTransform(resize_to)
-    dataset = RawFireDataset(args.data_root, sequence_length=4, transform=transform)
+    dataset = RawFireDataset(args.data_root, sequence_length=4, transform=transform, split=args.split)
+    print(f"Dataset split: {args.split}")
     print(f"Dataset size: {len(dataset)} samples (resized to {resize_to}×{resize_to})\n")
     
     # Initialize analyzer
