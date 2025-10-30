@@ -237,8 +237,9 @@ class GradCAMHypervolume:
             print(f"  Total pixels: {X.shape[0]}")
         
         # Compute convex hull for extreme fires
+        # Use QJ option to add small random noise (handles coplanar/degenerate data)
         try:
-            hull_extreme = ConvexHull(X_extreme)
+            hull_extreme = ConvexHull(X_extreme, qhull_options='QJ')
             volume_extreme = hull_extreme.volume
             print(f"  Extreme fire hypervolume: {volume_extreme:.4e}")
         except Exception as e:
@@ -251,7 +252,7 @@ class GradCAMHypervolume:
         hull_normal = None
         if X_normal is not None and len(X_normal) > len(feature_subset):
             try:
-                hull_normal = ConvexHull(X_normal)
+                hull_normal = ConvexHull(X_normal, qhull_options='QJ')
                 volume_normal = hull_normal.volume
                 print(f"  Normal fire hypervolume: {volume_normal:.4e}")
                 
