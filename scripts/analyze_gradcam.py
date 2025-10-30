@@ -425,7 +425,7 @@ def load_model(checkpoint_path, device='cuda'):
         dropout=cfg['model']['temporal']['dropout'],
         spatial_hidden=cfg['model']['spatial']['hidden_channels'],
         patch_size=cfg['model']['refinement']['patch_size'],
-        static_channels=cfg['data']['static_channels'],
+        static_channels=cfg['static']['num_channels'],
     ).to(device)
     
     # Load weights
