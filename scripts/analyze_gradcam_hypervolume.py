@@ -210,6 +210,10 @@ class GradCAMHypervolume:
             processed += B
             if processed % 100 == 0 or processed == num_samples:
                 print(f"  Processed {processed}/{num_samples} samples, {len(self.all_data)} pixels collected")
+            
+            # Clear GPU cache periodically to avoid OOM
+            if processed % 100 == 0:
+                torch.cuda.empty_cache()
         
         print(f"\n✓ Collected {len(self.all_data)} important pixels from {processed} samples")
     
