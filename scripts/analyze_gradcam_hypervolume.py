@@ -192,6 +192,23 @@ class GradCAMHypervolume:
         # Extract feature matrix
         X = df[feature_subset].values  # [N, n_features]
         
+        # Remove features with zero or very low variance (causes degenerate hull)
+        variances = X.var(axis=0)
+        min_variance = 1e-6
+        valid_features = variances > min_variance
+        
+        if not valid_features.all():
+            removed_features = [f for f, v in zip(feature_subset, valid_features) if not v]
+            print(f"  ⚠️  Removing {len(removed_features)} features with zero variance: {removed_features}")
+            
+            feature_subset = [f for f, v in zip(feature_subset, valid_features) if v]
+            X = X[:, valid_features]
+            
+            if len(feature_subset) < 3:
+                raise ValueError(f"Too few features remaining ({len(feature_subset)}). Need at least 3 for convex hull.")
+        
+        print(f"  Using {len(feature_subset)} features: {feature_subset}")
+        
         # Separate extreme vs normal fires
         if 'fire_intensity' in df.columns:
             extreme_threshold_val = np.percentile(df['fire_intensity'], extreme_threshold)
