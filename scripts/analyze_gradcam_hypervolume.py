@@ -142,9 +142,10 @@ class GradCAMHypervolume:
         for sample_idx in range(min(num_samples, len(dataset))):
             fire_hist, static, wind, target = dataset[sample_idx]
             
-            # Compute fire intensity (area burned as proxy)
+            # Compute fire intensity (total burned pixels as proxy for severity)
             if compute_intensity:
-                fire_intensity = target.sum().item() / target.numel()
+                # Use absolute burned area, not ratio (better separation)
+                fire_intensity = target.sum().item()
             else:
                 fire_intensity = None
             
@@ -201,6 +202,18 @@ class GradCAMHypervolume:
             
             print(f"  Extreme fires (>{extreme_threshold}th percentile): {X_extreme.shape[0]} pixels")
             print(f"  Normal fires: {X_normal.shape[0]} pixels")
+            
+            # Validate sufficient extreme samples
+            min_samples = len(feature_subset) + 1  # Need n+1 points for n-dimensional hull
+            if X_extreme.shape[0] < min_samples:
+                print(f"\n⚠️  ERROR: Not enough extreme fire samples!")
+                print(f"   Need at least {min_samples} samples for {len(feature_subset)}-D hypervolume")
+                print(f"   Only found {X_extreme.shape[0]} extreme samples")
+                print(f"\n   Try:")
+                print(f"   - Lower --extreme_threshold (e.g., 95 instead of 99)")
+                print(f"   - Increase --num_samples")
+                print(f"   - Use all samples without extreme/normal split")
+                raise ValueError(f"Insufficient extreme samples: {X_extreme.shape[0]} < {min_samples}")
         else:
             X_extreme = X
             X_normal = None
