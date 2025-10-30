@@ -449,7 +449,23 @@ def main():
                            antialias=True)
     
     transform = ResizeTransform(resize_to)
-    dataset = RawFireDataset(args.data_root, sequence_length=4, transform=transform, split=args.split)
+    full_dataset = RawFireDataset(args.data_root, sequence_length=4, transform=transform)
+    
+    # Split dataset manually (same as train_dino.py)
+    from torch.utils.data import Subset
+    total_samples = len(full_dataset.samples)
+    train_size = int(cfg['split']['train'] * total_samples)
+    val_size = int(cfg['split']['val'] * total_samples)
+    
+    if args.split == 'train':
+        indices = list(range(0, train_size))
+    elif args.split == 'val':
+        indices = list(range(train_size, train_size + val_size))
+    else:  # test
+        indices = list(range(train_size + val_size, total_samples))
+    
+    dataset = Subset(full_dataset, indices)
+    
     print(f"Dataset split: {args.split}")
     print(f"Dataset size: {len(dataset)} samples (resized to {resize_to}×{resize_to})\n")
     
