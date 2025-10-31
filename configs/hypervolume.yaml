@@ -1,0 +1,37 @@
+# Hypervolume Analysis Pipeline Configuration
+# Used by analyze_gradcam_hypervolume.py orchestrator
+
+# Stage 1: Salience Extraction
+extraction:
+  importance_threshold: 99  # Top 1% Grad-CAM pixels
+  batch_size: 4
+  buffer_size: 1000000  # Flush to Parquet every 1M rows
+  num_samples: -1  # -1 = all samples in split
+  split: train  # train, val, or test
+
+# Stage 2: U-Space Preparation
+u_space:
+  extreme_threshold: 99  # Top 1% fire intensity
+  max_components: 5  # Max PCA components
+  variance_threshold: 0.80  # Keep components explaining ≥80% variance
+
+# Stage 3: CHE Envelope
+che:
+  n_bootstraps: 200  # Number of hull bootstrap iterations
+  occupancy_threshold: 0.3  # Envelope = grid cells in ≥30% of hulls
+  max_hull_points: 10000  # Subsample if more points (prevents OOM)
+  grid_resolution: 100  # Occupancy grid resolution
+  sample_fraction: 0.8  # Fraction of points per bootstrap
+  seed: 42  # Random seed for reproducibility
+
+# Stage 4: Visualization
+visualization:
+  grid_resolution: 100  # Importance surface resolution
+  max_scatter_points: 10000  # Subsample for scatter plots
+
+# I/O paths
+paths:
+  salience: data/salience
+  u_space: data/u_space
+  che: data/che
+  output: results/hypervolume
