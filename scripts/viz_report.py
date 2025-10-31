@@ -309,6 +309,99 @@ class USpaceVisualizer:
         
         print(f"  ✓ Saved {output_path}")
         print(f"{'='*60}\n")
+    
+    def plot_3d_importance_surface(self, U, gradcam, transform_meta, output_dir):
+        """Plot 3D surface: U1 (x), U2 (y), Grad-CAM importance (z)"""
+        output_dir = Path(output_dir)
+        
+        print(f"Generating 3D importance surface plot...")
+        
+        # Subsample for visualization
+        max_points = 50000
+        if U.shape[0] > max_points:
+            idx = np.random.choice(U.shape[0], max_points, replace=False)
+            U_plot = U[idx, :2]
+            gradcam_plot = gradcam[idx]
+        else:
+            U_plot = U[:, :2]
+            gradcam_plot = gradcam
+        
+        # Create 3D figure
+        fig = plt.figure(figsize=(14, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Scatter with height = importance
+        scatter = ax.scatter(
+            U_plot[:, 0], U_plot[:, 1], gradcam_plot,
+            c=gradcam_plot,
+            cmap='hot',
+            s=3,
+            alpha=0.5,
+            edgecolors='none'
+        )
+        
+        # Formatting
+        variance_u1 = transform_meta['variance_explained'][0] * 100
+        variance_u2 = transform_meta['variance_explained'][1] * 100
+        
+        ax.set_xlabel(f'U1 ({variance_u1:.1f}% variance)', fontsize=12, fontweight='bold')
+        ax.set_ylabel(f'U2 ({variance_u2:.1f}% variance)', fontsize=12, fontweight='bold')
+        ax.set_zlabel('Grad-CAM Importance', fontsize=12, fontweight='bold')
+        ax.set_title('3D Importance Surface: U1 × U2 × Importance', 
+                    fontsize=16, fontweight='bold', pad=20)
+        
+        # Colorbar
+        cbar = plt.colorbar(scatter, ax=ax, fraction=0.03, pad=0.1, shrink=0.8)
+        cbar.set_label('Grad-CAM Value', fontsize=11, fontweight='bold')
+        
+        # Set viewing angle
+        ax.view_init(elev=25, azim=135)
+        
+        # Grid
+        ax.grid(alpha=0.3, linestyle='--')
+        
+        plt.tight_layout()
+        
+        # Save
+        output_path = output_dir / 'importance_surface_3d.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  ✓ Saved {output_path}")
+        
+        # Save another angle (side view)
+        fig = plt.figure(figsize=(14, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        scatter = ax.scatter(
+            U_plot[:, 0], U_plot[:, 1], gradcam_plot,
+            c=gradcam_plot,
+            cmap='hot',
+            s=3,
+            alpha=0.5,
+            edgecolors='none'
+        )
+        
+        ax.set_xlabel(f'U1 ({variance_u1:.1f}% variance)', fontsize=12, fontweight='bold')
+        ax.set_ylabel(f'U2 ({variance_u2:.1f}% variance)', fontsize=12, fontweight='bold')
+        ax.set_zlabel('Grad-CAM Importance', fontsize=12, fontweight='bold')
+        ax.set_title('3D Importance Surface: U1 × U2 × Importance (Side View)', 
+                    fontsize=16, fontweight='bold', pad=20)
+        
+        cbar = plt.colorbar(scatter, ax=ax, fraction=0.03, pad=0.1, shrink=0.8)
+        cbar.set_label('Grad-CAM Value', fontsize=11, fontweight='bold')
+        
+        ax.view_init(elev=10, azim=0)
+        ax.grid(alpha=0.3, linestyle='--')
+        
+        plt.tight_layout()
+        
+        output_path = output_dir / 'importance_surface_3d_side.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  ✓ Saved {output_path}")
+        print(f"{'='*60}\n")
 
 
 def main():
@@ -375,7 +468,10 @@ def main():
     viz.plot_scatter_overlay(U, gradcam, envelope_data, 
                             transform_meta, args.output)
     
-    # 3D scatter plot
+    # 3D importance surface (U1, U2, importance)
+    viz.plot_3d_importance_surface(U, gradcam, transform_meta, args.output)
+    
+    # 3D scatter plot (U1, U2, U3)
     viz.plot_3d_scatter(U, gradcam, transform_meta, args.output)
     
     print(f"\n{'='*60}")
