@@ -247,8 +247,23 @@ class GradCAMHypervolume:
         
         print(f"\nBuilding hypervolume with features: {feature_subset}")
         
-        # Extract feature matrix
-        X = df[feature_subset].values  # [N, n_features]
+        # Filter for EXTREME fires FIRST (before building feature matrix)
+        if 'fire_intensity' in df.columns:
+            extreme_threshold_val = np.percentile(df['fire_intensity'], extreme_threshold)
+            extreme_mask = df['fire_intensity'] > extreme_threshold_val
+            df_extreme = df[extreme_mask]
+            
+            print(f"\n  Filtering for extreme fires (>{extreme_threshold}th percentile):")
+            print(f"    Total pixels collected: {len(df)}")
+            print(f"    Extreme fire pixels: {len(df_extreme)}")
+            print(f"    Intensity threshold: {extreme_threshold_val:.4f}")
+        else:
+            # No intensity data - use all pixels
+            df_extreme = df
+            print(f"  Using all pixels (no intensity filtering): {len(df)}")
+        
+        # Extract feature matrix from EXTREME samples only
+        X = df_extreme[feature_subset].values  # [N_extreme, n_features]
         
         # Remove features with zero or very low variance (causes degenerate hull)
         variances = X.var(axis=0)
@@ -267,53 +282,37 @@ class GradCAMHypervolume:
         
         print(f"  Using {len(feature_subset)} features: {feature_subset}")
         
-        # Filter for EXTREME fires only (top 1% or user-specified percentile)
-        if 'fire_intensity' in df.columns:
-            extreme_threshold_val = np.percentile(df['fire_intensity'], extreme_threshold)
-            extreme_mask = df['fire_intensity'] > extreme_threshold_val
-            
-            X_extreme = X[extreme_mask]
-            
-            print(f"\n  Filtering for extreme fires (>{extreme_threshold}th percentile):")
-            print(f"    Total pixels collected: {X.shape[0]}")
-            print(f"    Extreme fire pixels: {X_extreme.shape[0]}")
-            print(f"    Intensity threshold: {extreme_threshold_val:.4f}")
-            
-            # Validate sufficient samples
-            min_samples = len(feature_subset) + 1  # Need n+1 points for n-dimensional hull
-            if X_extreme.shape[0] < min_samples:
-                print(f"\n⚠️  ERROR: Not enough extreme fire samples!")
-                print(f"   Need at least {min_samples} samples for {len(feature_subset)}-D hypervolume")
-                print(f"   Only found {X_extreme.shape[0]} extreme samples")
-                print(f"\n   Try:")
-                print(f"   - Lower --extreme_threshold (e.g., 95 or 90)")
-                print(f"   - Increase --num_samples")
-                raise ValueError(f"Insufficient extreme samples: {X_extreme.shape[0]} < {min_samples}")
-        else:
-            # No intensity data - use all pixels
-            X_extreme = X
-            print(f"  Using all pixels (no intensity filtering): {X.shape[0]}")
+        # Validate sufficient samples
+        min_samples = len(feature_subset) + 1  # Need n+1 points for n-dimensional hull
+        if X.shape[0] < min_samples:
+            print(f"\n⚠️  ERROR: Not enough extreme fire samples!")
+            print(f"   Need at least {min_samples} samples for {len(feature_subset)}-D hypervolume")
+            print(f"   Only found {X.shape[0]} extreme samples")
+            print(f"\n   Try:")
+            print(f"   - Lower --extreme_threshold (e.g., 95 or 90)")
+            print(f"   - Increase --num_samples")
+            raise ValueError(f"Insufficient extreme samples: {X.shape[0]} < {min_samples}")
         
         # Compute convex hull for EXTREME fires only
         # Use QJ option to add small random noise (handles coplanar/degenerate data)
         print(f"\n  Computing convex hull...")
         try:
-            hull_extreme = ConvexHull(X_extreme, qhull_options='QJ')
-            volume_extreme = hull_extreme.volume
-            print(f"  ✓ Extreme fire hypervolume: {volume_extreme:.6e}")
-            print(f"  ✓ Hull simplices: {len(hull_extreme.simplices)}")
-            print(f"  ✓ Hull vertices: {len(hull_extreme.vertices)}")
+            hull = ConvexHull(X, qhull_options='QJ')
+            volume = hull.volume
+            print(f"  ✓ Extreme fire hypervolume: {volume:.6e}")
+            print(f"  ✓ Hull simplices: {len(hull.simplices)}")
+            print(f"  ✓ Hull vertices: {len(hull.vertices)}")
         except Exception as e:
             print(f"  ⚠️  Could not compute convex hull: {e}")
-            volume_extreme = None
-            hull_extreme = None
+            volume = None
+            hull = None
         
         return {
             'features': feature_subset,
-            'n_extreme': X_extreme.shape[0],
-            'volume': float(volume_extreme) if volume_extreme is not None else None,
-            'hull': hull_extreme,
-            'X_extreme': X_extreme,
+            'n_extreme': X.shape[0],
+            'volume': float(volume) if volume is not None else None,
+            'hull': hull,
+            'X_extreme': X,
         }
     
     def visualize_hypervolume_2d(self, feature_x, feature_y, output_dir='results/hypervolume'):
@@ -482,6 +481,8 @@ def main():
                        help='Batch size for GPU processing (higher = faster)')
     parser.add_argument('--device', type=str, default='cuda',
                        help='Device to run on')
+    parser.add_argument('--wandb', action='store_true',
+                       help='Enable W&B logging for hypervolume metrics')
     
     args = parser.parse_args()
     

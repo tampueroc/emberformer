@@ -1,0 +1,253 @@
+"""
+Prepare U-Space from Salience Data
+
+Stage 2 of hypervolume pipeline:
+- Load Parquet salience data
+- Filter for extreme fires (top percentile)
+- Feature engineering: circular encodings for aspect/wind_direction
+- Z-score normalization
+- PCA projection to U-space (≤5 components, ≥80% variance)
+
+Usage:
+    python scripts/prep_u_space.py \
+        --input data/salience \
+        --output data/u_space \
+        --extreme_threshold 99 \
+        --max_components 5
+"""
+
+import numpy as np
+import pyarrow.parquet as pq
+from pathlib import Path
+import argparse
+import json
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from tqdm import tqdm
+
+
+class USpacePrep:
+    """Prepare U-space from salience data with feature engineering"""
+    
+    def __init__(self, max_components=5, variance_threshold=0.80):
+        self.max_components = max_components
+        self.variance_threshold = variance_threshold
+        self.scaler = None
+        self.pca = None
+        self.feature_names = None
+        
+    def load_extreme_fires(self, salience_dir, extreme_threshold=99):
+        """Load only extreme fire pixels from Parquet files"""
+        salience_dir = Path(salience_dir)
+        
+        # Load quantiles
+        with open(salience_dir / 'quantiles.json', 'r') as f:
+            quantiles = json.load(f)
+        
+        # Determine threshold
+        threshold_val = quantiles[f'p{extreme_threshold}']
+        print(f"\n{'='*60}")
+        print(f"Loading Extreme Fires (>{extreme_threshold}th percentile)")
+        print(f"{'='*60}")
+        print(f"Fire intensity threshold: {threshold_val:.4f}")
+        
+        # Find all parquet files
+        parquet_files = sorted(salience_dir.glob('part-*.parquet'))
+        print(f"Found {len(parquet_files)} parquet files")
+        
+        # Load and filter
+        data_chunks = []
+        total_rows = 0
+        extreme_rows = 0
+        
+        for pfile in tqdm(parquet_files, desc="Loading"):
+            table = pq.read_table(pfile, filters=[
+                ('fire_intensity', '>', threshold_val)
+            ])
+            
+            total_rows += pq.read_table(pfile).num_rows
+            extreme_rows += table.num_rows
+            
+            if table.num_rows > 0:
+                data_chunks.append(table.to_pydict())
+        
+        print(f"\n{'='*60}")
+        print(f"Total pixels: {total_rows:,}")
+        print(f"Extreme pixels: {extreme_rows:,} ({100*extreme_rows/total_rows:.2f}%)")
+        print(f"{'='*60}\n")
+        
+        # Combine chunks
+        if len(data_chunks) == 0:
+            raise ValueError("No extreme fire pixels found!")
+        
+        combined = {k: np.concatenate([chunk[k] for chunk in data_chunks]) 
+                   for k in data_chunks[0].keys()}
+        
+        return combined
+    
+    def engineer_features(self, data):
+        """Apply feature engineering transformations"""
+        print(f"\n{'='*60}")
+        print(f"Feature Engineering")
+        print(f"{'='*60}")
+        
+        features = {}
+        feature_list = []
+        
+        # Static features (keep as-is)
+        for feat in ['elevation', 'slope', 'fuel_load', 'vegetation', 
+                    'canopy_height', 'canopy_density']:
+            if feat in data:
+                features[feat] = np.array(data[feat], dtype=np.float32)
+                feature_list.append(feat)
+                print(f"  ✓ {feat}: {features[feat].shape[0]:,} values")
+        
+        # Circular encoding for aspect
+        if 'aspect' in data:
+            aspect_rad = np.array(data['aspect'], dtype=np.float32) * np.pi / 180
+            features['aspect_cos'] = np.cos(aspect_rad)
+            features['aspect_sin'] = np.sin(aspect_rad)
+            feature_list.extend(['aspect_cos', 'aspect_sin'])
+            print(f"  ✓ aspect → aspect_cos, aspect_sin")
+        
+        # Wind: keep speed + add components from direction
+        if 'wind_speed' in data and 'wind_direction' in data:
+            wind_speed = np.array(data['wind_speed'], dtype=np.float32)
+            wind_dir_rad = np.array(data['wind_direction'], dtype=np.float32) * np.pi / 180
+            
+            features['wind_speed'] = wind_speed
+            features['wind_u'] = wind_speed * np.cos(wind_dir_rad)
+            features['wind_v'] = wind_speed * np.sin(wind_dir_rad)
+            feature_list.extend(['wind_speed', 'wind_u', 'wind_v'])
+            print(f"  ✓ wind_speed, wind_direction → wind_speed, wind_u, wind_v")
+        
+        print(f"\nTotal features: {len(feature_list)}")
+        print(f"{'='*60}\n")
+        
+        # Stack into matrix
+        X = np.column_stack([features[f] for f in feature_list])
+        
+        # Keep metadata
+        metadata = {
+            'gradcam': np.array(data['gradcam'], dtype=np.float32),
+            'fire_intensity': np.array(data['fire_intensity'], dtype=np.float32),
+            'y': np.array(data['y'], dtype=np.int32),
+            'x': np.array(data['x'], dtype=np.int32),
+        }
+        
+        self.feature_names = feature_list
+        return X, metadata
+    
+    def fit_transform(self, X):
+        """Z-score + PCA to U-space"""
+        print(f"\n{'='*60}")
+        print(f"PCA Transformation")
+        print(f"{'='*60}")
+        print(f"Input shape: {X.shape}")
+        
+        # Z-score normalization
+        self.scaler = StandardScaler()
+        X_scaled = self.scaler.fit_transform(X)
+        print(f"  ✓ Z-score normalized (mean=0, std=1)")
+        
+        # PCA
+        n_components = min(self.max_components, X.shape[1])
+        self.pca = PCA(n_components=n_components)
+        U = self.pca.fit_transform(X_scaled)
+        
+        # Find components explaining variance_threshold
+        cumsum_var = np.cumsum(self.pca.explained_variance_ratio_)
+        n_keep = np.searchsorted(cumsum_var, self.variance_threshold) + 1
+        n_keep = max(2, min(n_keep, n_components))  # Keep at least 2, at most max_components
+        
+        U = U[:, :n_keep]
+        
+        print(f"\n  ✓ PCA complete:")
+        print(f"    Components: {n_keep} (variance ≥ {self.variance_threshold*100:.0f}%)")
+        print(f"    Total variance explained: {cumsum_var[n_keep-1]*100:.2f}%")
+        print(f"    Output shape: {U.shape}")
+        
+        # Print variance per component
+        print(f"\n  Variance by component:")
+        for i in range(n_keep):
+            print(f"    U{i+1}: {self.pca.explained_variance_ratio_[i]*100:.2f}% "
+                  f"(cumulative: {cumsum_var[i]*100:.2f}%)")
+        
+        print(f"{'='*60}\n")
+        
+        return U[:, :n_keep]
+    
+    def save(self, U, metadata, output_dir):
+        """Save U-space data and transformation metadata"""
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save U-space data
+        np.savez_compressed(
+            output_dir / 'extreme.npz',
+            U=U.astype(np.float32),
+            gradcam=metadata['gradcam'],
+            fire_intensity=metadata['fire_intensity'],
+            y=metadata['y'],
+            x=metadata['x'],
+        )
+        
+        # Save transformation metadata
+        transform_meta = {
+            'feature_names': self.feature_names,
+            'n_components': U.shape[1],
+            'variance_explained': self.pca.explained_variance_ratio_[:U.shape[1]].tolist(),
+            'total_variance': float(np.sum(self.pca.explained_variance_ratio_[:U.shape[1]])),
+            'scaler_mean': self.scaler.mean_.tolist(),
+            'scaler_std': self.scaler.scale_.tolist(),
+            'pca_components': self.pca.components_[:U.shape[1]].tolist(),
+            'n_samples': U.shape[0],
+        }
+        
+        with open(output_dir / 'transform.json', 'w') as f:
+            json.dump(transform_meta, f, indent=2)
+        
+        print(f"{'='*60}")
+        print(f"✓ Saved U-space data")
+        print(f"{'='*60}")
+        print(f"  {output_dir}/extreme.npz ({U.shape[0]:,} points × {U.shape[1]} dims)")
+        print(f"  {output_dir}/transform.json (PCA metadata)")
+        print(f"{'='*60}\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Prepare U-Space from Salience Data')
+    parser.add_argument('--input', type=str, required=True,
+                       help='Input directory with Parquet salience files')
+    parser.add_argument('--output', type=str, default='data/u_space',
+                       help='Output directory for U-space data')
+    parser.add_argument('--extreme_threshold', type=int, default=99,
+                       help='Percentile threshold for extreme fires (99 = top 1%)')
+    parser.add_argument('--max_components', type=int, default=5,
+                       help='Maximum number of PCA components to keep')
+    parser.add_argument('--variance_threshold', type=float, default=0.80,
+                       help='Minimum cumulative variance to retain (0.80 = 80%%)')
+    
+    args = parser.parse_args()
+    
+    # Initialize
+    prep = USpacePrep(
+        max_components=args.max_components,
+        variance_threshold=args.variance_threshold
+    )
+    
+    # Load extreme fires
+    data = prep.load_extreme_fires(args.input, args.extreme_threshold)
+    
+    # Feature engineering
+    X, metadata = prep.engineer_features(data)
+    
+    # Transform to U-space
+    U = prep.fit_transform(X)
+    
+    # Save
+    prep.save(U, metadata, args.output)
+
+
+if __name__ == '__main__':
+    main()
