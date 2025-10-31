@@ -216,24 +216,33 @@ class USpaceVisualizer:
         print(f"{'='*60}\n")
     
     def plot_3d_scatter(self, U, gradcam, transform_meta, output_dir):
-        """Plot 3D scatter of U1, U2, U3 with convex hull surface"""
+        """Plot 3D scatter of U1, U2, U3 with convex hull surface (top 1% importance only)"""
         output_dir = Path(output_dir)
         
         if U.shape[1] < 3:
             print(f"⚠️  Skipping 3D plot: only {U.shape[1]} components available")
             return
         
-        print(f"Generating 3D scatter plot with convex hull...")
+        print(f"Generating 3D scatter plot with convex hull (top 1% importance)...")
         
-        # Subsample for visualization (plot max 50k points for 3D)
+        # Filter for top 1% by Grad-CAM importance
+        threshold_99 = np.percentile(gradcam, 99)
+        top_1pct_mask = gradcam > threshold_99
+        U_top = U[top_1pct_mask, :3]
+        gradcam_top = gradcam[top_1pct_mask]
+        
+        print(f"  Top 1% pixels: {U_top.shape[0]:,} / {U.shape[0]:,}")
+        print(f"  Importance threshold: {threshold_99:.4f}")
+        
+        # Subsample for visualization if still too many
         max_points = 50000
-        if U.shape[0] > max_points:
-            idx = np.random.choice(U.shape[0], max_points, replace=False)
-            U_plot = U[idx, :3]
-            gradcam_plot = gradcam[idx]
+        if U_top.shape[0] > max_points:
+            idx = np.random.choice(U_top.shape[0], max_points, replace=False)
+            U_plot = U_top[idx]
+            gradcam_plot = gradcam_top[idx]
         else:
-            U_plot = U[:, :3]
-            gradcam_plot = gradcam
+            U_plot = U_top
+            gradcam_plot = gradcam_top
         
         # Compute convex hull on subsampled data for surface
         # Further subsample for hull computation if needed (max 10k points)
