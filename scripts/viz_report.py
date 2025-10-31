@@ -16,6 +16,7 @@ Usage:
 
 import numpy as np
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 from pathlib import Path
 import argparse
 import json
@@ -210,6 +211,104 @@ class USpaceVisualizer:
         
         print(f"  ✓ Saved {output_path}")
         print(f"{'='*60}\n")
+    
+    def plot_3d_scatter(self, U, gradcam, transform_meta, output_dir):
+        """Plot 3D scatter of U1, U2, U3 with Grad-CAM coloring"""
+        output_dir = Path(output_dir)
+        
+        if U.shape[1] < 3:
+            print(f"⚠️  Skipping 3D plot: only {U.shape[1]} components available")
+            return
+        
+        print(f"Generating 3D scatter plot...")
+        
+        # Subsample for visualization (plot max 50k points for 3D)
+        max_points = 50000
+        if U.shape[0] > max_points:
+            idx = np.random.choice(U.shape[0], max_points, replace=False)
+            U_plot = U[idx, :3]
+            gradcam_plot = gradcam[idx]
+        else:
+            U_plot = U[:, :3]
+            gradcam_plot = gradcam
+        
+        # Create 3D figure
+        fig = plt.figure(figsize=(14, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Scatter with Grad-CAM coloring
+        scatter = ax.scatter(
+            U_plot[:, 0], U_plot[:, 1], U_plot[:, 2],
+            c=gradcam_plot,
+            cmap='hot',
+            s=2,
+            alpha=0.4,
+            edgecolors='none'
+        )
+        
+        # Formatting
+        variance_u1 = transform_meta['variance_explained'][0] * 100
+        variance_u2 = transform_meta['variance_explained'][1] * 100
+        variance_u3 = transform_meta['variance_explained'][2] * 100
+        
+        ax.set_xlabel(f'U1 ({variance_u1:.1f}%)', fontsize=12, fontweight='bold')
+        ax.set_ylabel(f'U2 ({variance_u2:.1f}%)', fontsize=12, fontweight='bold')
+        ax.set_zlabel(f'U3 ({variance_u3:.1f}%)', fontsize=12, fontweight='bold')
+        ax.set_title('3D U-Space: Extreme Fire Environmental Conditions', 
+                    fontsize=16, fontweight='bold', pad=20)
+        
+        # Colorbar
+        cbar = plt.colorbar(scatter, ax=ax, fraction=0.03, pad=0.1, shrink=0.8)
+        cbar.set_label('Grad-CAM Importance', fontsize=11, fontweight='bold')
+        
+        # Set viewing angle
+        ax.view_init(elev=20, azim=45)
+        
+        # Grid
+        ax.grid(alpha=0.3, linestyle='--')
+        
+        plt.tight_layout()
+        
+        # Save
+        output_path = output_dir / 'u_space_3d.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  ✓ Saved {output_path}")
+        
+        # Save another angle
+        fig = plt.figure(figsize=(14, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        scatter = ax.scatter(
+            U_plot[:, 0], U_plot[:, 1], U_plot[:, 2],
+            c=gradcam_plot,
+            cmap='hot',
+            s=2,
+            alpha=0.4,
+            edgecolors='none'
+        )
+        
+        ax.set_xlabel(f'U1 ({variance_u1:.1f}%)', fontsize=12, fontweight='bold')
+        ax.set_ylabel(f'U2 ({variance_u2:.1f}%)', fontsize=12, fontweight='bold')
+        ax.set_zlabel(f'U3 ({variance_u3:.1f}%)', fontsize=12, fontweight='bold')
+        ax.set_title('3D U-Space: Extreme Fire Environmental Conditions (Top View)', 
+                    fontsize=16, fontweight='bold', pad=20)
+        
+        cbar = plt.colorbar(scatter, ax=ax, fraction=0.03, pad=0.1, shrink=0.8)
+        cbar.set_label('Grad-CAM Importance', fontsize=11, fontweight='bold')
+        
+        ax.view_init(elev=70, azim=45)
+        ax.grid(alpha=0.3, linestyle='--')
+        
+        plt.tight_layout()
+        
+        output_path = output_dir / 'u_space_3d_topview.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  ✓ Saved {output_path}")
+        print(f"{'='*60}\n")
 
 
 def main():
@@ -275,6 +374,9 @@ def main():
     # Scatter overlay
     viz.plot_scatter_overlay(U, gradcam, envelope_data, 
                             transform_meta, args.output)
+    
+    # 3D scatter plot
+    viz.plot_3d_scatter(U, gradcam, transform_meta, args.output)
     
     print(f"\n{'='*60}")
     print(f"✓ Visualization Complete")
