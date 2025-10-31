@@ -21,6 +21,7 @@ from pathlib import Path
 import argparse
 import json
 from scipy.stats import binned_statistic_2d
+from scipy.interpolate import griddata
 
 
 class USpaceVisualizer:
@@ -402,6 +403,132 @@ class USpaceVisualizer:
         
         print(f"  ✓ Saved {output_path}")
         print(f"{'='*60}\n")
+    
+    def plot_3d_surface_mesh(self, U, gradcam, transform_meta, output_dir):
+        """Plot 3D surface mesh: interpolated surface over U1-U2 grid"""
+        output_dir = Path(output_dir)
+        
+        print(f"Generating 3D surface mesh plot...")
+        
+        # Subsample for interpolation
+        max_points = 100000
+        if U.shape[0] > max_points:
+            idx = np.random.choice(U.shape[0], max_points, replace=False)
+            U_plot = U[idx, :2]
+            gradcam_plot = gradcam[idx]
+        else:
+            U_plot = U[:, :2]
+            gradcam_plot = gradcam
+        
+        # Create regular grid
+        grid_res = 50
+        u1_min, u1_max = U_plot[:, 0].min(), U_plot[:, 0].max()
+        u2_min, u2_max = U_plot[:, 1].min(), U_plot[:, 1].max()
+        
+        u1_grid = np.linspace(u1_min, u1_max, grid_res)
+        u2_grid = np.linspace(u2_min, u2_max, grid_res)
+        U1, U2 = np.meshgrid(u1_grid, u2_grid)
+        
+        # Interpolate Grad-CAM values onto grid
+        points = U_plot
+        values = gradcam_plot
+        Z = griddata(points, values, (U1, U2), method='cubic', fill_value=np.nan)
+        
+        # Create 3D figure with surface
+        fig = plt.figure(figsize=(14, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Plot surface
+        surf = ax.plot_surface(
+            U1, U2, Z,
+            cmap='hot',
+            alpha=0.7,
+            edgecolor='none',
+            antialiased=True,
+            shade=True
+        )
+        
+        # Overlay scattered points (subsampled for clarity)
+        sample_size = min(5000, len(U_plot))
+        idx_scatter = np.random.choice(len(U_plot), sample_size, replace=False)
+        ax.scatter(
+            U_plot[idx_scatter, 0], 
+            U_plot[idx_scatter, 1], 
+            gradcam_plot[idx_scatter],
+            c='black',
+            s=1,
+            alpha=0.2
+        )
+        
+        # Formatting
+        variance_u1 = transform_meta['variance_explained'][0] * 100
+        variance_u2 = transform_meta['variance_explained'][1] * 100
+        
+        ax.set_xlabel(f'U1 ({variance_u1:.1f}% variance)', fontsize=12, fontweight='bold')
+        ax.set_ylabel(f'U2 ({variance_u2:.1f}% variance)', fontsize=12, fontweight='bold')
+        ax.set_zlabel('Grad-CAM Importance', fontsize=12, fontweight='bold')
+        ax.set_title('3D Importance Surface Mesh: U1 × U2 × Importance', 
+                    fontsize=16, fontweight='bold', pad=20)
+        
+        # Colorbar
+        cbar = plt.colorbar(surf, ax=ax, fraction=0.03, pad=0.1, shrink=0.8)
+        cbar.set_label('Grad-CAM Value', fontsize=11, fontweight='bold')
+        
+        # Set viewing angle
+        ax.view_init(elev=30, azim=135)
+        ax.grid(alpha=0.3, linestyle='--')
+        
+        plt.tight_layout()
+        
+        # Save
+        output_path = output_dir / 'importance_surface_mesh.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  ✓ Saved {output_path}")
+        
+        # Save another angle
+        fig = plt.figure(figsize=(14, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        surf = ax.plot_surface(
+            U1, U2, Z,
+            cmap='hot',
+            alpha=0.7,
+            edgecolor='none',
+            antialiased=True,
+            shade=True
+        )
+        
+        ax.scatter(
+            U_plot[idx_scatter, 0], 
+            U_plot[idx_scatter, 1], 
+            gradcam_plot[idx_scatter],
+            c='black',
+            s=1,
+            alpha=0.2
+        )
+        
+        ax.set_xlabel(f'U1 ({variance_u1:.1f}% variance)', fontsize=12, fontweight='bold')
+        ax.set_ylabel(f'U2 ({variance_u2:.1f}% variance)', fontsize=12, fontweight='bold')
+        ax.set_zlabel('Grad-CAM Importance', fontsize=12, fontweight='bold')
+        ax.set_title('3D Importance Surface Mesh (Top View)', 
+                    fontsize=16, fontweight='bold', pad=20)
+        
+        cbar = plt.colorbar(surf, ax=ax, fraction=0.03, pad=0.1, shrink=0.8)
+        cbar.set_label('Grad-CAM Value', fontsize=11, fontweight='bold')
+        
+        ax.view_init(elev=60, azim=45)
+        ax.grid(alpha=0.3, linestyle='--')
+        
+        plt.tight_layout()
+        
+        output_path = output_dir / 'importance_surface_mesh_top.png'
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  ✓ Saved {output_path}")
+        print(f"{'='*60}\n")
 
 
 def main():
@@ -470,6 +597,9 @@ def main():
     
     # 3D importance surface (U1, U2, importance)
     viz.plot_3d_importance_surface(U, gradcam, transform_meta, args.output)
+    
+    # 3D surface mesh (interpolated surface)
+    viz.plot_3d_surface_mesh(U, gradcam, transform_meta, args.output)
     
     # 3D scatter plot (U1, U2, U3)
     viz.plot_3d_scatter(U, gradcam, transform_meta, args.output)
