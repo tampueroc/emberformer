@@ -17,11 +17,13 @@ Usage:
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from pathlib import Path
 import argparse
 import json
 from scipy.stats import binned_statistic_2d
 from scipy.interpolate import griddata
+from scipy.spatial import ConvexHull
 
 
 class USpaceVisualizer:
@@ -214,14 +216,14 @@ class USpaceVisualizer:
         print(f"{'='*60}\n")
     
     def plot_3d_scatter(self, U, gradcam, transform_meta, output_dir):
-        """Plot 3D scatter of U1, U2, U3 with Grad-CAM coloring"""
+        """Plot 3D scatter of U1, U2, U3 with convex hull surface"""
         output_dir = Path(output_dir)
         
         if U.shape[1] < 3:
             print(f"⚠️  Skipping 3D plot: only {U.shape[1]} components available")
             return
         
-        print(f"Generating 3D scatter plot...")
+        print(f"Generating 3D scatter plot with convex hull...")
         
         # Subsample for visualization (plot max 50k points for 3D)
         max_points = 50000
@@ -233,9 +235,36 @@ class USpaceVisualizer:
             U_plot = U[:, :3]
             gradcam_plot = gradcam
         
+        # Compute convex hull on subsampled data for surface
+        # Further subsample for hull computation if needed (max 10k points)
+        if U_plot.shape[0] > 10000:
+            idx_hull = np.random.choice(U_plot.shape[0], 10000, replace=False)
+            U_hull = U_plot[idx_hull]
+        else:
+            U_hull = U_plot
+        
+        try:
+            hull = ConvexHull(U_hull)
+            print(f"  ✓ Computed convex hull: {len(hull.simplices)} faces, {len(hull.vertices)} vertices")
+        except Exception as e:
+            print(f"  ⚠️  Failed to compute convex hull: {e}")
+            hull = None
+        
         # Create 3D figure
         fig = plt.figure(figsize=(14, 12))
         ax = fig.add_subplot(111, projection='3d')
+        
+        # Plot convex hull surface
+        if hull is not None:
+            # Get the vertices for each simplex
+            verts = []
+            for simplex in hull.simplices:
+                verts.append([U_hull[simplex[0]], U_hull[simplex[1]], U_hull[simplex[2]]])
+            
+            # Create Poly3DCollection
+            poly = Poly3DCollection(verts, alpha=0.15, facecolor='cyan', 
+                                   edgecolor='darkblue', linewidths=0.3)
+            ax.add_collection3d(poly)
         
         # Scatter with Grad-CAM coloring
         scatter = ax.scatter(
@@ -243,7 +272,7 @@ class USpaceVisualizer:
             c=gradcam_plot,
             cmap='hot',
             s=2,
-            alpha=0.4,
+            alpha=0.6,
             edgecolors='none'
         )
         
@@ -255,7 +284,7 @@ class USpaceVisualizer:
         ax.set_xlabel(f'U1 ({variance_u1:.1f}%)', fontsize=12, fontweight='bold')
         ax.set_ylabel(f'U2 ({variance_u2:.1f}%)', fontsize=12, fontweight='bold')
         ax.set_zlabel(f'U3 ({variance_u3:.1f}%)', fontsize=12, fontweight='bold')
-        ax.set_title('3D U-Space: Extreme Fire Environmental Conditions', 
+        ax.set_title('3D U-Space with Convex Hull Envelope', 
                     fontsize=16, fontweight='bold', pad=20)
         
         # Colorbar
@@ -271,7 +300,7 @@ class USpaceVisualizer:
         plt.tight_layout()
         
         # Save
-        output_path = output_dir / 'u_space_3d.png'
+        output_path = output_dir / 'u_space_3d_hull.png'
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         
@@ -281,19 +310,28 @@ class USpaceVisualizer:
         fig = plt.figure(figsize=(14, 12))
         ax = fig.add_subplot(111, projection='3d')
         
+        # Plot hull again
+        if hull is not None:
+            verts = []
+            for simplex in hull.simplices:
+                verts.append([U_hull[simplex[0]], U_hull[simplex[1]], U_hull[simplex[2]]])
+            poly = Poly3DCollection(verts, alpha=0.15, facecolor='cyan', 
+                                   edgecolor='darkblue', linewidths=0.3)
+            ax.add_collection3d(poly)
+        
         scatter = ax.scatter(
             U_plot[:, 0], U_plot[:, 1], U_plot[:, 2],
             c=gradcam_plot,
             cmap='hot',
             s=2,
-            alpha=0.4,
+            alpha=0.6,
             edgecolors='none'
         )
         
         ax.set_xlabel(f'U1 ({variance_u1:.1f}%)', fontsize=12, fontweight='bold')
         ax.set_ylabel(f'U2 ({variance_u2:.1f}%)', fontsize=12, fontweight='bold')
         ax.set_zlabel(f'U3 ({variance_u3:.1f}%)', fontsize=12, fontweight='bold')
-        ax.set_title('3D U-Space: Extreme Fire Environmental Conditions (Top View)', 
+        ax.set_title('3D U-Space with Convex Hull Envelope (Top View)', 
                     fontsize=16, fontweight='bold', pad=20)
         
         cbar = plt.colorbar(scatter, ax=ax, fraction=0.03, pad=0.1, shrink=0.8)
@@ -304,7 +342,7 @@ class USpaceVisualizer:
         
         plt.tight_layout()
         
-        output_path = output_dir / 'u_space_3d_topview.png'
+        output_path = output_dir / 'u_space_3d_hull_top.png'
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         
@@ -595,13 +633,7 @@ def main():
     viz.plot_scatter_overlay(U, gradcam, envelope_data, 
                             transform_meta, args.output)
     
-    # 3D importance surface (U1, U2, importance)
-    viz.plot_3d_importance_surface(U, gradcam, transform_meta, args.output)
-    
-    # 3D surface mesh (interpolated surface)
-    viz.plot_3d_surface_mesh(U, gradcam, transform_meta, args.output)
-    
-    # 3D scatter plot (U1, U2, U3)
+    # 3D scatter plot with convex hull (U1, U2, U3)
     viz.plot_3d_scatter(U, gradcam, transform_meta, args.output)
     
     print(f"\n{'='*60}")
