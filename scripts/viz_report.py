@@ -254,21 +254,25 @@ class USpaceVisualizer:
         fig = plt.figure(figsize=(14, 12))
         ax = fig.add_subplot(111, projection='3d')
         
-        # Plot convex hull surface
+        # Plot convex hull surface (swap axes: U3=x, U2=y, U1=z)
         if hull is not None:
-            # Get the vertices for each simplex
+            # Get the vertices for each simplex with swapped axes
             verts = []
             for simplex in hull.simplices:
-                verts.append([U_hull[simplex[0]], U_hull[simplex[1]], U_hull[simplex[2]]])
+                # Original: [U1, U2, U3], swap to [U3, U2, U1]
+                v0 = [U_hull[simplex[0], 2], U_hull[simplex[0], 1], U_hull[simplex[0], 0]]
+                v1 = [U_hull[simplex[1], 2], U_hull[simplex[1], 1], U_hull[simplex[1], 0]]
+                v2 = [U_hull[simplex[2], 2], U_hull[simplex[2], 1], U_hull[simplex[2], 0]]
+                verts.append([v0, v1, v2])
             
             # Create Poly3DCollection
             poly = Poly3DCollection(verts, alpha=0.15, facecolor='cyan', 
                                    edgecolor='darkblue', linewidths=0.3)
             ax.add_collection3d(poly)
         
-        # Scatter with Grad-CAM coloring
+        # Scatter with Grad-CAM coloring (swap axes: U3=x, U2=y, U1=z)
         scatter = ax.scatter(
-            U_plot[:, 0], U_plot[:, 1], U_plot[:, 2],
+            U_plot[:, 2], U_plot[:, 1], U_plot[:, 0],
             c=gradcam_plot,
             cmap='hot',
             s=2,
@@ -281,9 +285,9 @@ class USpaceVisualizer:
         variance_u2 = transform_meta['variance_explained'][1] * 100
         variance_u3 = transform_meta['variance_explained'][2] * 100
         
-        ax.set_xlabel(f'U1 ({variance_u1:.1f}%)', fontsize=12, fontweight='bold')
+        ax.set_xlabel(f'U3 ({variance_u3:.1f}%)', fontsize=12, fontweight='bold')
         ax.set_ylabel(f'U2 ({variance_u2:.1f}%)', fontsize=12, fontweight='bold')
-        ax.set_zlabel(f'U3 ({variance_u3:.1f}%)', fontsize=12, fontweight='bold')
+        ax.set_zlabel(f'U1 ({variance_u1:.1f}%)', fontsize=12, fontweight='bold')
         ax.set_title('3D U-Space with Convex Hull Envelope', 
                     fontsize=16, fontweight='bold', pad=20)
         
@@ -310,17 +314,20 @@ class USpaceVisualizer:
         fig = plt.figure(figsize=(14, 12))
         ax = fig.add_subplot(111, projection='3d')
         
-        # Plot hull again
+        # Plot hull again (swap axes: U3=x, U2=y, U1=z)
         if hull is not None:
             verts = []
             for simplex in hull.simplices:
-                verts.append([U_hull[simplex[0]], U_hull[simplex[1]], U_hull[simplex[2]]])
+                v0 = [U_hull[simplex[0], 2], U_hull[simplex[0], 1], U_hull[simplex[0], 0]]
+                v1 = [U_hull[simplex[1], 2], U_hull[simplex[1], 1], U_hull[simplex[1], 0]]
+                v2 = [U_hull[simplex[2], 2], U_hull[simplex[2], 1], U_hull[simplex[2], 0]]
+                verts.append([v0, v1, v2])
             poly = Poly3DCollection(verts, alpha=0.15, facecolor='cyan', 
                                    edgecolor='darkblue', linewidths=0.3)
             ax.add_collection3d(poly)
         
         scatter = ax.scatter(
-            U_plot[:, 0], U_plot[:, 1], U_plot[:, 2],
+            U_plot[:, 2], U_plot[:, 1], U_plot[:, 0],
             c=gradcam_plot,
             cmap='hot',
             s=2,
@@ -328,9 +335,9 @@ class USpaceVisualizer:
             edgecolors='none'
         )
         
-        ax.set_xlabel(f'U1 ({variance_u1:.1f}%)', fontsize=12, fontweight='bold')
+        ax.set_xlabel(f'U3 ({variance_u3:.1f}%)', fontsize=12, fontweight='bold')
         ax.set_ylabel(f'U2 ({variance_u2:.1f}%)', fontsize=12, fontweight='bold')
-        ax.set_zlabel(f'U3 ({variance_u3:.1f}%)', fontsize=12, fontweight='bold')
+        ax.set_zlabel(f'U1 ({variance_u1:.1f}%)', fontsize=12, fontweight='bold')
         ax.set_title('3D U-Space with Convex Hull Envelope (Top View)', 
                     fontsize=16, fontweight='bold', pad=20)
         
