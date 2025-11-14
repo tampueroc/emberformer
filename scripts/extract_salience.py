@@ -37,8 +37,10 @@ from torch.utils.data import DataLoader, Subset
 
 
 SCHEMA = pa.schema([
-    ('y', pa.int32()),
-    ('x', pa.int32()),
+    ('sample_id', pa.int32()),          # NEW: which sample in dataset
+    ('sequence_id', pa.string()),       # NEW: fire sequence ID
+    ('y', pa.int32()),                  # Y in resized 406×406 space
+    ('x', pa.int32()),                  # X in resized 406×406 space
     ('gradcam', pa.float32()),
     ('elevation', pa.float32()),
     ('slope', pa.float32()),
@@ -82,6 +84,8 @@ class SalienceExtractor:
         
         # Convert to PyArrow Table
         table = pa.Table.from_pydict({
+            'sample_id': pa.array([r['sample_id'] for r in self.buffer], type=pa.int32()),
+            'sequence_id': pa.array([r['sequence_id'] for r in self.buffer], type=pa.string()),
             'y': pa.array([r['y'] for r in self.buffer], type=pa.int32()),
             'x': pa.array([r['x'] for r in self.buffer], type=pa.int32()),
             'gradcam': pa.array([r['gradcam'] for r in self.buffer], type=pa.float32()),
@@ -105,7 +109,7 @@ class SalienceExtractor:
         self.part_idx += 1
         self.buffer = []
         
-    def extract_batch(self, batch_fire, batch_static, batch_wind, batch_target, batch_valid_t):
+    def extract_batch(self, batch_fire, batch_static, batch_wind, batch_target, batch_valid_t, batch_indices, dataset):
         """Extract important pixels from a batch"""
         B = batch_fire.shape[0]
         
@@ -117,6 +121,11 @@ class SalienceExtractor:
         for b in range(B):
             fire_intensity = batch_target[b].sum().item()
             self.fire_intensities.append(fire_intensity)
+            
+            # Get sample metadata
+            sample_idx = batch_indices[b].item() if hasattr(batch_indices[b], 'item') else batch_indices[b]
+            sample_info = dataset.samples[sample_idx]
+            sequence_id = sample_info['sequence_id']
             
             cam_np = cam[b].cpu().numpy()
             
@@ -134,6 +143,8 @@ class SalienceExtractor:
             
             for y, x in zip(y_coords, x_coords):
                 row = {
+                    'sample_id': int(sample_idx),
+                    'sequence_id': str(sequence_id),
                     'y': int(y),
                     'x': int(x),
                     'gradcam': float(cam_np[y, x]),
@@ -154,39 +165,62 @@ class SalienceExtractor:
     
     def process_dataset(self, dataset, output_dir, num_samples=-1, batch_size=16):
         """Process dataset and write to Parquet"""
-        from scripts.train_dino import collate_raw_dino
-        
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get the underlying dataset (unwrap Subset if needed)
+        base_dataset = dataset.dataset if isinstance(dataset, Subset) else dataset
         
         # Create subset if needed
         if num_samples > 0 and num_samples < len(dataset):
             indices = list(range(num_samples))
-            dataset = Subset(dataset, indices)
+            dataset_subset = Subset(base_dataset, indices)
+        else:
+            dataset_subset = dataset
+        
+        # Custom collate that returns indices
+        def collate_with_indices(batch):
+            from scripts.train_dino import collate_raw_dino
+            indices = [item[0] for item in batch]
+            samples = [item[1] for item in batch]
+            collated = collate_raw_dino(samples)
+            return collated, indices
+        
+        # Wrap dataset to return (index, sample)
+        class IndexedDataset:
+            def __init__(self, dataset):
+                self.dataset = dataset
+            def __len__(self):
+                return len(self.dataset)
+            def __getitem__(self, idx):
+                return idx, self.dataset[idx]
+        
+        indexed_dataset = IndexedDataset(dataset_subset)
         
         # Create dataloader
         loader = DataLoader(
-            dataset,
+            indexed_dataset,
             batch_size=batch_size,
             shuffle=False,
             num_workers=0,
-            collate_fn=collate_raw_dino
+            collate_fn=collate_with_indices
         )
         
         print(f"\n{'='*60}")
-        print(f"Extracting Salience: {len(dataset)} samples (batch_size={batch_size})")
+        print(f"Extracting Salience: {len(dataset_subset)} samples (batch_size={batch_size})")
         print(f"Output: {output_dir}")
         print(f"Importance threshold: top {100-self.importance_threshold}%")
         print(f"{'='*60}\n")
         
         # Process batches
-        for batch_fire, batch_static, batch_wind, batch_target, batch_valid_t in tqdm(loader, desc="Processing"):
+        for (batch_fire, batch_static, batch_wind, batch_target, batch_valid_t), batch_indices in tqdm(loader, desc="Processing"):
             batch_fire = batch_fire.to(self.device)
             batch_static = batch_static.to(self.device)
             batch_wind = batch_wind.to(self.device)
             batch_valid_t = batch_valid_t.to(self.device)
             
-            self.extract_batch(batch_fire, batch_static, batch_wind, batch_target, batch_valid_t)
+            self.extract_batch(batch_fire, batch_static, batch_wind, batch_target, batch_valid_t, 
+                             batch_indices, base_dataset)
             
             # Flush if buffer is large
             if len(self.buffer) >= self.buffer_size:

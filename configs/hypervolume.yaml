@@ -29,9 +29,15 @@ visualization:
   grid_resolution: 100  # Importance surface resolution
   max_scatter_points: 10000  # Subsample for scatter plots
 
+# Stage 5: Danger Map
+danger_map:
+  grid_resolution: 10  # Spatial downsampling (every 10th pixel)
+  sigma: 100  # Distance decay parameter (pixels)
+
 # I/O paths
 paths:
   salience: data/salience
   u_space: data/u_space
   che: data/che
   output: results/hypervolume
+  danger_map: data/danger_map

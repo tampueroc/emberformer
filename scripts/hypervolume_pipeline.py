@@ -126,6 +126,24 @@ def viz(args, config):
     run_stage(cmd, 'Visualize')
 
 
+def danger_map(args, config):
+    """Stage 5: Create spatial danger map"""
+    cfg = config.get('danger_map', {})
+    paths = config['paths']
+    
+    cmd = [
+        'python', 'scripts/create_danger_map.py',
+        '--u_space', paths['u_space'],
+        '--salience', paths['salience'],
+        '--data_root', args.data_root or '~/data/deep_crown_dataset/organized_spreads',
+        '--output', paths.get('danger_map', 'data/danger_map'),
+        '--grid_resolution', str(cfg.get('grid_resolution', 10)),
+        '--sigma', str(cfg.get('sigma', 100)),
+    ]
+    
+    run_stage(cmd, 'Danger Map')
+
+
 def all_stages(args, config):
     """Run all pipeline stages"""
     print(f"\n{'#'*70}")
@@ -136,6 +154,7 @@ def all_stages(args, config):
     prep(args, config)
     che(args, config)
     viz(args, config)
+    danger_map(args, config)
     
     print(f"\n{'#'*70}")
     print(f"# ✓ PIPELINE COMPLETE")
@@ -144,6 +163,7 @@ def all_stages(args, config):
     print(f"CHE data: {config['paths']['che']}/")
     print(f"U-space data: {config['paths']['u_space']}/")
     print(f"Salience data: {config['paths']['salience']}/")
+    print(f"Danger map: {config['paths'].get('danger_map', 'data/danger_map')}/")
     print(f"{'#'*70}\n")
 
 
@@ -204,6 +224,12 @@ Examples:
     parser_viz = subparsers.add_parser('viz', parents=[shared_parser],
                                       help='Visualize results')
     
+    # Danger map stage
+    parser_danger = subparsers.add_parser('danger', parents=[shared_parser],
+                                         help='Create spatial danger map')
+    parser_danger.add_argument('--data_root', type=str, default=None,
+                              help='Dataset root directory')
+    
     args = parser.parse_args()
     
     # Load config
@@ -220,6 +246,8 @@ Examples:
         che(args, config)
     elif args.command == 'viz':
         viz(args, config)
+    elif args.command == 'danger':
+        danger_map(args, config)
 
 
 if __name__ == '__main__':
