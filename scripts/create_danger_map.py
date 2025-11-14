@@ -57,23 +57,33 @@ class DangerMapper:
         print(f"Top 1% threshold: {threshold_99:.4f}")
         print(f"Top 1% pixels: {top_1pct_mask.sum():,} / {len(gradcam):,}")
         
-        # Now load corresponding salience data to get sample_id and coords
-        # Since we don't have sample_id yet, we need to match by row order
-        # Load salience parquet files
+        # Load salience parquet files and filter for extreme fires first
         salience_dir = Path(salience_dir)
+        
+        # Get extreme fire threshold from quantiles
+        with open(salience_dir / 'quantiles.json', 'r') as f:
+            quantiles = json.load(f)
+        extreme_threshold = quantiles['p99']
+        
+        print(f"\nLoading extreme fire salience data (fire_intensity > {extreme_threshold:.2f})...")
+        
         parquet_files = sorted(salience_dir.glob('part-*.parquet'))
         
-        print(f"\nLoading salience data from {len(parquet_files)} parquet files...")
-        
-        # Load all data (we already filtered to extreme fires in prep_u_space)
+        # Load all extreme fire pixels
         all_rows = []
         row_offset = 0
         
         for pfile in tqdm(parquet_files, desc="Loading parquet"):
-            table = pq.read_table(pfile)
+            # Filter for extreme fires during read
+            table = pq.read_table(pfile, filters=[
+                ('fire_intensity', '>', extreme_threshold)
+            ])
             df = table.to_pandas()
             
-            # Track which rows from this file are in top 1%
+            if len(df) == 0:
+                continue
+            
+            # Track which rows from this file are in top 1% Grad-CAM
             file_size = len(df)
             file_mask = top_1pct_mask[row_offset:row_offset + file_size]
             
