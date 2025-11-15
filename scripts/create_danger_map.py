@@ -355,7 +355,8 @@ class DangerMapper:
         # Second pass: normalize and collect danger pixels
         for y in range(H):
             for x in range(W):
-                if np.isnan(distance_grid[y, x]):
+                # Skip invalid pixels
+                if not self.valid_mask[y, x] or np.isnan(distance_grid[y, x]):
                     continue
                 
                 distance = distance_grid[y, x]
