@@ -29,9 +29,10 @@ from tqdm import tqdm
 class USpacePrep:
     """Prepare U-space from salience data with feature engineering"""
     
-    def __init__(self, max_components=5, variance_threshold=0.80):
+    def __init__(self, max_components=5, variance_threshold=0.80, min_feature_std=0.01):
         self.max_components = max_components
         self.variance_threshold = variance_threshold
+        self.min_feature_std = min_feature_std
         self.scaler = None
         self.pca = None
         self.feature_names = None
@@ -130,7 +131,7 @@ class USpacePrep:
         return X, metadata
     
     def fit_transform(self, X):
-        """Z-score + PCA to U-space"""
+        """Z-score + PCA to U-space with low-variance feature filtering"""
         print(f"\n{'='*60}")
         print(f"PCA Transformation")
         print(f"{'='*60}")
@@ -141,8 +142,35 @@ class USpacePrep:
         X_scaled = self.scaler.fit_transform(X)
         print(f"  ✓ Z-score normalized (mean=0, std=1)")
         
+        # Filter low-variance features
+        feature_stds = self.scaler.scale_
+        high_var_mask = feature_stds >= self.min_feature_std
+        n_dropped = (~high_var_mask).sum()
+        
+        if n_dropped > 0:
+            print(f"\n  Filtering low-variance features (std < {self.min_feature_std}):")
+            for i, (name, std, keep) in enumerate(zip(self.feature_names, feature_stds, high_var_mask)):
+                if not keep:
+                    print(f"    ✗ {name}: std={std:.4f} (DROPPED)")
+            
+            # Keep only high-variance features
+            X_scaled = X_scaled[:, high_var_mask]
+            self.feature_names = [name for name, keep in zip(self.feature_names, high_var_mask) if keep]
+            kept_stds = feature_stds[high_var_mask]
+            kept_means = self.scaler.mean_[high_var_mask]
+            
+            print(f"\n  Kept features ({len(self.feature_names)}):")
+            for name, mean, std in zip(self.feature_names, kept_means, kept_stds):
+                print(f"    ✓ {name}: mean={mean:.3f}, std={std:.3f}")
+            
+            # Update scaler to reflect kept features only
+            self.scaler.mean_ = kept_means
+            self.scaler.scale_ = kept_stds
+        
+        print(f"\n  Final feature count: {X_scaled.shape[1]}")
+        
         # PCA
-        n_components = min(self.max_components, X.shape[1])
+        n_components = min(self.max_components, X_scaled.shape[1])
         self.pca = PCA(n_components=n_components)
         U = self.pca.fit_transform(X_scaled)
         
@@ -218,13 +246,16 @@ def main():
                        help='Maximum number of PCA components to keep')
     parser.add_argument('--variance_threshold', type=float, default=0.80,
                        help='Minimum cumulative variance to retain (0.80 = 80%%)')
+    parser.add_argument('--min_feature_std', type=float, default=0.10,
+                       help='Minimum std for feature to be kept (default=0.10, filters sparse/constant features)')
     
     args = parser.parse_args()
     
     # Initialize
     prep = USpacePrep(
         max_components=args.max_components,
-        variance_threshold=args.variance_threshold
+        variance_threshold=args.variance_threshold,
+        min_feature_std=args.min_feature_std
     )
     
     # Load extreme fires
