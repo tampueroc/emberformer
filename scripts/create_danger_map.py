@@ -26,6 +26,10 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import rasterio
 from matplotlib.colors import LinearSegmentedColormap
+import sys
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from data.transforms import LandscapeNormalize
 
 
 class DangerMapper:
@@ -34,20 +38,27 @@ class DangerMapper:
     def __init__(self, data_root):
         self.data_root = Path(data_root)
         
-        # Load landscape
+        # Load and normalize landscape using SAME transform as training
         landscape_path = self.data_root / 'landscape' / 'Input_Geotiff.tif'
         print(f"Loading landscape from {landscape_path}...")
         
+        normalizer = LandscapeNormalize()
+        landscape_xr = normalizer(str(landscape_path))
+        
+        # Convert to numpy [C, H, W]
+        self.landscape = landscape_xr.values.astype(np.float32)
+        self.landscape_shape = (landscape_xr.shape[1], landscape_xr.shape[2])  # (H, W)
+        self.nodata = -1.0  # After normalization, -9999 becomes -1
+        
+        # Get raw landscape for visualization
         with rasterio.open(landscape_path) as src:
-            self.landscape = src.read().astype(np.float32)  # [8, H, W]
-            self.landscape_shape = src.shape
+            self.landscape_raw = src.read().astype(np.float32)
             self.landscape_transform = src.transform
             self.landscape_crs = src.crs
-            self.nodata = -9999.0
         
         print(f"  Shape: {self.landscape_shape[0]} × {self.landscape_shape[1]} pixels")
         print(f"  Bands: {self.landscape.shape[0]}")
-        print(f"  CRS: {self.landscape_crs}")
+        print(f"  Normalized: min={self.landscape.min():.2f}, max={self.landscape.max():.2f}")
         
         # Create valid data mask
         self.valid_mask = self.landscape[0] != self.nodata
@@ -206,6 +217,11 @@ class DangerMapper:
             'canopy_density': 6,
         }
         
+        # Debug: track statistics
+        u_values = []
+        inside_count = 0
+        sample_features = []
+        
         # Process in chunks (row-wise)
         for start_row in tqdm(range(0, H, chunk_size), desc="Processing landscape"):
             end_row = min(start_row + chunk_size, H)
@@ -229,21 +245,45 @@ class DangerMapper:
                         'wind_direction': typical_wind_dir,
                     }
                     
+                    # Debug: sample first 10 pixels
+                    if len(sample_features) < 10:
+                        sample_features.append(pixel_features.copy())
+                    
                     # Engineer features
                     X = self.engineer_pixel_features(pixel_features)
                     
                     # Project to U-space
                     U = self.project_to_uspace(X)
                     
+                    # Debug: collect U values
+                    if len(u_values) < 1000:
+                        u_values.append(U[:2])
+                    
                     # Check envelope membership
                     inside, distance = self.check_envelope_membership(U)
                     
                     if inside:
+                        inside_count += 1
                         # Inside envelope = high danger (0.5-0.7 based on occupancy)
                         danger_grid[y, x] = 0.5 + 0.2 * distance
                     else:
                         # Outside envelope = lower danger (0.7-1.0 based on distance)
                         danger_grid[y, x] = 0.7 + 0.3 * min(distance, 1.0)
+        
+        # Debug output
+        if len(u_values) > 0:
+            u_values = np.array(u_values)
+            print(f"\n  DEBUG: Sample U-space projections:")
+            print(f"    U1 range: [{u_values[:, 0].min():.2f}, {u_values[:, 0].max():.2f}]")
+            print(f"    U2 range: [{u_values[:, 1].min():.2f}, {u_values[:, 1].max():.2f}]")
+            print(f"    Envelope U1 bounds: [{self.envelope_bounds[0][0]:.2f}, {self.envelope_bounds[1][0]:.2f}]")
+            print(f"    Envelope U2 bounds: [{self.envelope_bounds[0][1]:.2f}, {self.envelope_bounds[1][1]:.2f}]")
+        
+        if len(sample_features) > 0:
+            print(f"\n  DEBUG: Sample landscape features:")
+            for i, pf in enumerate(sample_features[:3]):
+                print(f"    Pixel {i}: elev={pf['elevation']:.1f}, slope={pf['slope']:.3f}, "
+                      f"aspect={pf['aspect']:.3f}, fuel={pf['fuel_load']:.2f}")
         
         print(f"\n✓ Danger map created")
         valid_danger = danger_grid[~np.isnan(danger_grid)]
@@ -275,8 +315,9 @@ class DangerMapper:
         # 1. Elevation-only map
         fig, ax = plt.subplots(figsize=(18, 14))
         
-        elevation = self.landscape[0].copy()
-        elevation[elevation == self.nodata] = np.nan
+        # Use raw elevation for visualization
+        elevation = self.landscape_raw[0].copy()
+        elevation[elevation == -9999] = np.nan
         
         ax.imshow(
             elevation,
