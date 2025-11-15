@@ -295,136 +295,73 @@ class DangerMapper:
             'urbana': 7,
         }
         
-        # Debug: track statistics
-        u_values = []
-        inside_count = 0
-        sample_features = []
-        
         # Store raw features for pixels inside danger zone
         danger_pixel_data = []
+        distances_list = []
         
-        # First pass: compute all distances
-        distance_grid = np.full((H, W), np.nan, dtype=np.float32)
+        # Process only valid pixels (where elevation is valid)
+        print(f"  Processing {self.valid_mask.sum():,} valid pixels...")
         
-        print("  Pass 1: Computing distances to envelope...")
-        for start_row in tqdm(range(0, H, chunk_size), desc="Computing distances"):
-            end_row = min(start_row + chunk_size, H)
-            
-            for y in range(start_row, end_row):
-                for x in range(W):
-                    # Skip invalid pixels
-                    if not self.valid_mask[y, x]:
-                        continue
-                    
-                    # Extract environmental features
-                    pixel_features = {
-                        'forest': self.landscape[band_idx['forest'], y, x],
-                        'arqueo': self.landscape[band_idx['arqueo'], y, x],
-                        'cbd': self.landscape[band_idx['cbd'], y, x],
-                        'cbh': self.landscape[band_idx['cbh'], y, x],
-                        'elevation': self.landscape[band_idx['elevation'], y, x],
-                        'flora': self.landscape[band_idx['flora'], y, x],
-                        'paleo': self.landscape[band_idx['paleo'], y, x],
-                        'urbana': self.landscape[band_idx['urbana'], y, x],
-                        'wind_speed': wind_speed_normalized,
-                        'wind_direction': typical_wind_dir,
-                    }
-                    
-                    # Engineer features
-                    X = self.engineer_pixel_features(pixel_features)
-                    
-                    # Project to U-space
-                    U = self.project_to_uspace(X)
-                    
-                    # Debug: collect U values
-                    if len(u_values) < 1000:
-                        u_values.append(U[:2])
-                    
-                    # Compute distance to envelope
-                    distance = self.compute_distance_to_envelope(U)
-                    distance_grid[y, x] = distance
-                    
-                    # Track pixels truly inside envelope (before normalization)
-                    if distance == 0.0:
-                        inside_count += 1
-                        sample_features.append(pixel_features.copy())
-        
-        # Get statistics on distances
-        valid_distances = distance_grid[self.valid_mask]
-        min_dist = valid_distances.min()
-        max_dist = valid_distances.max()
-        inside_envelope_count = (valid_distances == 0.0).sum()
-        
-        print(f"\n  Distance statistics:")
-        print(f"    Min: {min_dist:.4f}")
-        print(f"    Max: {max_dist:.4f}")
-        print(f"    Mean: {valid_distances.mean():.4f}")
-        print(f"    Pixels inside envelope: {inside_envelope_count:,} ({inside_envelope_count/len(valid_distances)*100:.1f}%)")
-        print(f"  Pass 2: Converting to danger scores...")
-        
-        # Get valid pixel coordinates
         y_coords, x_coords = np.where(self.valid_mask)
-        
-        # Second pass: convert distances to danger scores using absolute thresholds
-        for y, x in zip(y_coords, x_coords):
-            distance = distance_grid[y, x]
+        for idx in tqdm(range(len(y_coords)), desc="Computing danger scores"):
+            y, x = y_coords[idx], x_coords[idx]
             
-            # Convert distance to danger score [0=max danger, 1=safe]
-            # Inside envelope (distance=0) = highest danger (0.0)
-            # Close to envelope (distance<0.5) = high danger (0.0-0.5)
-            # Far from envelope (distance>=0.5) = lower danger (0.5-1.0, capped at 1.0)
+            # Extract environmental features for this pixel
+            pixel_features = {
+                'forest': self.landscape[band_idx['forest'], y, x],
+                'arqueo': self.landscape[band_idx['arqueo'], y, x],
+                'cbd': self.landscape[band_idx['cbd'], y, x],
+                'cbh': self.landscape[band_idx['cbh'], y, x],
+                'elevation': self.landscape[band_idx['elevation'], y, x],
+                'flora': self.landscape[band_idx['flora'], y, x],
+                'paleo': self.landscape[band_idx['paleo'], y, x],
+                'urbana': self.landscape[band_idx['urbana'], y, x],
+                'wind_speed': wind_speed_normalized,
+                'wind_direction': typical_wind_dir,
+            }
+            
+            # Engineer features
+            X = self.engineer_pixel_features(pixel_features)
+            
+            # Project to U-space
+            U = self.project_to_uspace(X)
+            
+            # Compute distance to envelope
+            distance = self.compute_distance_to_envelope(U)
+            distances_list.append(distance)
+            
+            # Assign danger score (cap at 1.0 for display)
             danger_score = min(distance, 1.0)
-            
             danger_grid[y, x] = danger_score
             
-            # Save pixels inside envelope or very close (distance < 0.3)
+            # Save high-danger pixels (distance < 0.3)
             if distance < 0.3:
-                # Get pixel features
-                pixel_features = {
-                    'forest': self.landscape[band_idx['forest'], y, x],
-                    'arqueo': self.landscape[band_idx['arqueo'], y, x],
-                    'cbd': self.landscape[band_idx['cbd'], y, x],
-                    'cbh': self.landscape[band_idx['cbh'], y, x],
-                    'elevation': self.landscape[band_idx['elevation'], y, x],
-                    'flora': self.landscape[band_idx['flora'], y, x],
-                    'paleo': self.landscape[band_idx['paleo'], y, x],
-                    'urbana': self.landscape[band_idx['urbana'], y, x],
-                    'wind_speed': wind_speed_normalized,
-                    'wind_direction': typical_wind_dir,
-                }
-                
                 danger_record = {
-                    'y': y,
-                    'x': x,
-                    'forest': pixel_features['forest'],
-                    'arqueo': pixel_features['arqueo'],
-                    'cbd': pixel_features['cbd'],
-                    'cbh': pixel_features['cbh'],
-                    'elevation': pixel_features['elevation'],
-                    'flora': pixel_features['flora'],
-                    'paleo': pixel_features['paleo'],
-                    'urbana': pixel_features['urbana'],
-                    'wind_speed': pixel_features['wind_speed'],
-                    'wind_direction': pixel_features['wind_direction'],
-                    'distance_to_envelope': distance,
-                    'danger_score': danger_score,
+                    'y': int(y),
+                    'x': int(x),
+                    'forest': float(pixel_features['forest']),
+                    'arqueo': float(pixel_features['arqueo']),
+                    'cbd': float(pixel_features['cbd']),
+                    'cbh': float(pixel_features['cbh']),
+                    'elevation': float(pixel_features['elevation']),
+                    'flora': float(pixel_features['flora']),
+                    'paleo': float(pixel_features['paleo']),
+                    'urbana': float(pixel_features['urbana']),
+                    'wind_speed': float(wind_speed_normalized),
+                    'wind_direction': float(typical_wind_dir),
+                    'distance_to_envelope': float(distance),
+                    'danger_score': float(danger_score),
                 }
                 danger_pixel_data.append(danger_record)
         
-        # Debug output
-        if len(u_values) > 0:
-            u_values = np.array(u_values)
-            print(f"\n  DEBUG: Sample U-space projections:")
-            print(f"    U1 range: [{u_values[:, 0].min():.2f}, {u_values[:, 0].max():.2f}]")
-            print(f"    U2 range: [{u_values[:, 1].min():.2f}, {u_values[:, 1].max():.2f}]")
-            print(f"    Envelope U1 bounds: [{self.envelope_bounds[0][0]:.2f}, {self.envelope_bounds[1][0]:.2f}]")
-            print(f"    Envelope U2 bounds: [{self.envelope_bounds[0][1]:.2f}, {self.envelope_bounds[1][1]:.2f}]")
-        
-        if len(sample_features) > 0:
-            print(f"\n  DEBUG: Sample landscape features:")
-            for i, pf in enumerate(sample_features[:3]):
-                print(f"    Pixel {i}: elev={pf['elevation']:.1f}, forest={pf['forest']:.1f}, "
-                      f"cbd={pf['cbd']:.3f}, cbh={pf['cbh']:.2f}")
+        # Statistics
+        distances_arr = np.array(distances_list)
+        print(f"\n  Distance statistics:")
+        print(f"    Min: {distances_arr.min():.4f}")
+        print(f"    Max: {distances_arr.max():.4f}")
+        print(f"    Mean: {distances_arr.mean():.4f}")
+        print(f"    Median: {np.median(distances_arr):.4f}")
+        print(f"    Inside envelope (dist=0): {(distances_arr == 0.0).sum():,} ({(distances_arr == 0.0).sum()/len(distances_arr)*100:.1f}%)")
         
         print(f"\n✓ Danger map created")
         valid_danger = danger_grid[~np.isnan(danger_grid)]
