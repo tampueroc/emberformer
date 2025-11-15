@@ -341,22 +341,6 @@ class DangerMapper:
               f"X=[{df_abs_top1pct['x_abs'].min():.0f}, {df_abs_top1pct['x_abs'].max():.0f}]")
         print(f"  Landscape extent: Y=[0, {self.landscape_shape[0]}], X=[0, {self.landscape_shape[1]}]")
         
-        # Invert y-coordinates to match image origin='upper' (0 at top)
-        y_inverted = self.landscape_shape[0] - df_abs_top1pct['y_abs']
-        
-        # Highlight top 1% danger sources ONLY (don't plot all 1M pixels)
-        ax.scatter(
-            df_abs_top1pct['x_abs'],
-            y_inverted,
-            c='darkred',
-            s=5,
-            alpha=0.9,
-            edgecolors='black',
-            linewidths=0.5,
-            marker='*',
-            label=f'Top 1% danger sources ({len(df_abs_top1pct):,})'
-        )
-        
         ax.set_xlabel('X (landscape pixels)', fontsize=13, fontweight='bold')
         ax.set_ylabel('Y (landscape pixels)', fontsize=13, fontweight='bold')
         ax.set_title('Fire Danger Map: Full Landscape\nDanger = Proximity to Extreme Fire Environmental Hypervolume', 
@@ -367,8 +351,6 @@ class DangerMapper:
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
         cbar.set_label('Danger Score\n(0.5=High Danger, 1.0=Low Danger)', fontsize=11, fontweight='bold')
-        
-        ax.legend(loc='upper right', fontsize=9, framealpha=0.9)
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map.png', dpi=300, bbox_inches='tight')
