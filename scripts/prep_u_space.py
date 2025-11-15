@@ -95,31 +95,22 @@ class USpacePrep:
         feature_list = []
         
         # Static features (keep as-is)
-        for feat in ['elevation', 'slope', 'fuel_load', 'vegetation', 
-                    'canopy_height', 'canopy_density']:
+        for feat in ['forest', 'arqueo', 'cbd', 'cbh', 'elevation', 'flora', 'paleo', 'urbana']:
             if feat in data:
                 features[feat] = np.array(data[feat], dtype=np.float32)
                 feature_list.append(feat)
                 print(f"  ✓ {feat}: {features[feat].shape[0]:,} values")
         
-        # Circular encoding for aspect
-        if 'aspect' in data:
-            aspect_rad = np.array(data['aspect'], dtype=np.float32) * np.pi / 180
-            features['aspect_cos'] = np.cos(aspect_rad)
-            features['aspect_sin'] = np.sin(aspect_rad)
-            feature_list.extend(['aspect_cos', 'aspect_sin'])
-            print(f"  ✓ aspect → aspect_cos, aspect_sin")
-        
-        # Wind: keep speed + add components from direction
+        # Wind: polar coordinates with circular encoding
         if 'wind_speed' in data and 'wind_direction' in data:
             wind_speed = np.array(data['wind_speed'], dtype=np.float32)
             wind_dir_rad = np.array(data['wind_direction'], dtype=np.float32) * np.pi / 180
             
             features['wind_speed'] = wind_speed
-            features['wind_u'] = wind_speed * np.cos(wind_dir_rad)
-            features['wind_v'] = wind_speed * np.sin(wind_dir_rad)
-            feature_list.extend(['wind_speed', 'wind_u', 'wind_v'])
-            print(f"  ✓ wind_speed, wind_direction → wind_speed, wind_u, wind_v")
+            features['wind_direction_cos'] = np.cos(wind_dir_rad)
+            features['wind_direction_sin'] = np.sin(wind_dir_rad)
+            feature_list.extend(['wind_speed', 'wind_direction_cos', 'wind_direction_sin'])
+            print(f"  ✓ wind_speed, wind_direction → wind_speed, wind_direction_cos, wind_direction_sin")
         
         print(f"\nTotal features: {len(feature_list)}")
         print(f"{'='*60}\n")

@@ -119,31 +119,28 @@ class DangerMapper:
         features = []
         
         for feat_name in self.feature_names:
-            if feat_name == 'elevation':
+            if feat_name == 'forest':
+                features.append(pixel_features['forest'])
+            elif feat_name == 'arqueo':
+                features.append(pixel_features['arqueo'])
+            elif feat_name == 'cbd':
+                features.append(pixel_features['cbd'])
+            elif feat_name == 'cbh':
+                features.append(pixel_features['cbh'])
+            elif feat_name == 'elevation':
                 features.append(pixel_features['elevation'])
-            elif feat_name == 'slope':
-                features.append(pixel_features['slope'])
-            elif feat_name == 'fuel_load':
-                features.append(pixel_features['fuel_load'])
-            elif feat_name == 'vegetation':
-                features.append(pixel_features['vegetation'])
-            elif feat_name == 'canopy_height':
-                features.append(pixel_features['canopy_height'])
-            elif feat_name == 'canopy_density':
-                features.append(pixel_features['canopy_density'])
-            elif feat_name == 'aspect_cos':
-                aspect_rad = pixel_features['aspect'] * np.pi / 180
-                features.append(np.cos(aspect_rad))
-            elif feat_name == 'aspect_sin':
-                aspect_rad = pixel_features['aspect'] * np.pi / 180
-                features.append(np.sin(aspect_rad))
+            elif feat_name == 'flora':
+                features.append(pixel_features['flora'])
+            elif feat_name == 'paleo':
+                features.append(pixel_features['paleo'])
+            elif feat_name == 'urbana':
+                features.append(pixel_features['urbana'])
             elif feat_name == 'wind_speed':
                 features.append(pixel_features['wind_speed'])
-            elif feat_name == 'wind_u':
-                # Use typical summer wind (or could load from weather data)
-                features.append(pixel_features['wind_speed'] * np.cos(pixel_features['wind_direction'] * np.pi / 180))
-            elif feat_name == 'wind_v':
-                features.append(pixel_features['wind_speed'] * np.sin(pixel_features['wind_direction'] * np.pi / 180))
+            elif feat_name == 'wind_direction_cos':
+                features.append(np.cos(pixel_features['wind_direction'] * np.pi / 180))
+            elif feat_name == 'wind_direction_sin':
+                features.append(np.sin(pixel_features['wind_direction'] * np.pi / 180))
         
         return np.array(features, dtype=np.float32)
     
@@ -207,15 +204,16 @@ class DangerMapper:
         H, W = self.landscape_shape
         danger_grid = np.full((H, W), np.nan, dtype=np.float32)
         
-        # Band mapping
+        # Band mapping (actual GeoTIFF structure)
         band_idx = {
-            'elevation': 0,
-            'slope': 1,
-            'aspect': 2,
-            'fuel_load': 3,
-            'vegetation': 4,
-            'canopy_height': 5,
-            'canopy_density': 6,
+            'forest': 0,
+            'arqueo': 1,
+            'cbd': 2,
+            'cbh': 3,
+            'elevation': 4,
+            'flora': 5,
+            'paleo': 6,
+            'urbana': 7,
         }
         
         # Debug: track statistics
@@ -238,13 +236,14 @@ class DangerMapper:
                     
                     # Extract environmental features
                     pixel_features = {
+                        'forest': self.landscape[band_idx['forest'], y, x],
+                        'arqueo': self.landscape[band_idx['arqueo'], y, x],
+                        'cbd': self.landscape[band_idx['cbd'], y, x],
+                        'cbh': self.landscape[band_idx['cbh'], y, x],
                         'elevation': self.landscape[band_idx['elevation'], y, x],
-                        'slope': self.landscape[band_idx['slope'], y, x],
-                        'aspect': self.landscape[band_idx['aspect'], y, x],
-                        'fuel_load': self.landscape[band_idx['fuel_load'], y, x],
-                        'vegetation': self.landscape[band_idx['vegetation'], y, x],
-                        'canopy_height': self.landscape[band_idx['canopy_height'], y, x],
-                        'canopy_density': self.landscape[band_idx['canopy_density'], y, x],
+                        'flora': self.landscape[band_idx['flora'], y, x],
+                        'paleo': self.landscape[band_idx['paleo'], y, x],
+                        'urbana': self.landscape[band_idx['urbana'], y, x],
                         'wind_speed': typical_wind_speed,
                         'wind_direction': typical_wind_dir,
                     }
@@ -275,13 +274,14 @@ class DangerMapper:
                         danger_record = {
                             'y': y,
                             'x': x,
+                            'forest': pixel_features['forest'],
+                            'arqueo': pixel_features['arqueo'],
+                            'cbd': pixel_features['cbd'],
+                            'cbh': pixel_features['cbh'],
                             'elevation': pixel_features['elevation'],
-                            'slope': pixel_features['slope'],
-                            'aspect': pixel_features['aspect'],
-                            'fuel_load': pixel_features['fuel_load'],
-                            'vegetation': pixel_features['vegetation'],
-                            'canopy_height': pixel_features['canopy_height'],
-                            'canopy_density': pixel_features['canopy_density'],
+                            'flora': pixel_features['flora'],
+                            'paleo': pixel_features['paleo'],
+                            'urbana': pixel_features['urbana'],
                             'wind_speed': pixel_features['wind_speed'],
                             'wind_direction': pixel_features['wind_direction'],
                             'danger_score': 0.5 + 0.2 * distance,
@@ -303,8 +303,8 @@ class DangerMapper:
         if len(sample_features) > 0:
             print(f"\n  DEBUG: Sample landscape features:")
             for i, pf in enumerate(sample_features[:3]):
-                print(f"    Pixel {i}: elev={pf['elevation']:.1f}, slope={pf['slope']:.3f}, "
-                      f"aspect={pf['aspect']:.3f}, fuel={pf['fuel_load']:.2f}")
+                print(f"    Pixel {i}: elev={pf['elevation']:.1f}, forest={pf['forest']:.1f}, "
+                      f"cbd={pf['cbd']:.3f}, cbh={pf['cbh']:.2f}")
         
         print(f"\n✓ Danger map created")
         valid_danger = danger_grid[~np.isnan(danger_grid)]

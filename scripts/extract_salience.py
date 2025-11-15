@@ -42,21 +42,22 @@ SCHEMA = pa.schema([
     ('y', pa.int32()),                  # Y in resized 406×406 space
     ('x', pa.int32()),                  # X in resized 406×406 space
     ('gradcam', pa.float32()),
+    ('forest', pa.float32()),
+    ('arqueo', pa.float32()),
+    ('cbd', pa.float32()),
+    ('cbh', pa.float32()),
     ('elevation', pa.float32()),
-    ('slope', pa.float32()),
-    ('aspect', pa.float32()),
-    ('fuel_load', pa.float32()),
-    ('vegetation', pa.float32()),
-    ('canopy_height', pa.float32()),
-    ('canopy_density', pa.float32()),
+    ('flora', pa.float32()),
+    ('paleo', pa.float32()),
+    ('urbana', pa.float32()),
     ('wind_speed', pa.float32()),
     ('wind_direction', pa.float32()),
     ('fire_intensity', pa.float32()),
 ])
 
 STATIC_NAMES = [
-    'elevation', 'slope', 'aspect', 'fuel_load',
-    'vegetation', 'canopy_height', 'canopy_density', 'other'
+    'forest', 'arqueo', 'cbd', 'cbh',
+    'elevation', 'flora', 'paleo', 'urbana'
 ]
 
 
@@ -89,13 +90,14 @@ class SalienceExtractor:
             'y': pa.array([r['y'] for r in self.buffer], type=pa.int32()),
             'x': pa.array([r['x'] for r in self.buffer], type=pa.int32()),
             'gradcam': pa.array([r['gradcam'] for r in self.buffer], type=pa.float32()),
+            'forest': pa.array([r['forest'] for r in self.buffer], type=pa.float32()),
+            'arqueo': pa.array([r['arqueo'] for r in self.buffer], type=pa.float32()),
+            'cbd': pa.array([r['cbd'] for r in self.buffer], type=pa.float32()),
+            'cbh': pa.array([r['cbh'] for r in self.buffer], type=pa.float32()),
             'elevation': pa.array([r['elevation'] for r in self.buffer], type=pa.float32()),
-            'slope': pa.array([r['slope'] for r in self.buffer], type=pa.float32()),
-            'aspect': pa.array([r['aspect'] for r in self.buffer], type=pa.float32()),
-            'fuel_load': pa.array([r['fuel_load'] for r in self.buffer], type=pa.float32()),
-            'vegetation': pa.array([r['vegetation'] for r in self.buffer], type=pa.float32()),
-            'canopy_height': pa.array([r['canopy_height'] for r in self.buffer], type=pa.float32()),
-            'canopy_density': pa.array([r['canopy_density'] for r in self.buffer], type=pa.float32()),
+            'flora': pa.array([r['flora'] for r in self.buffer], type=pa.float32()),
+            'paleo': pa.array([r['paleo'] for r in self.buffer], type=pa.float32()),
+            'urbana': pa.array([r['urbana'] for r in self.buffer], type=pa.float32()),
             'wind_speed': pa.array([r['wind_speed'] for r in self.buffer], type=pa.float32()),
             'wind_direction': pa.array([r['wind_direction'] for r in self.buffer], type=pa.float32()),
             'fire_intensity': pa.array([r['fire_intensity'] for r in self.buffer], type=pa.float32()),
@@ -155,8 +157,8 @@ class SalienceExtractor:
                 
                 # Add static features
                 for i, name in enumerate(STATIC_NAMES[:min(8, static_np.shape[0])]):
-                    if name in ['elevation', 'slope', 'aspect', 'fuel_load', 
-                               'vegetation', 'canopy_height', 'canopy_density']:
+                    if name in ['forest', 'arqueo', 'cbd', 'cbh', 
+                               'elevation', 'flora', 'paleo', 'urbana']:
                         row[name] = float(static_np[i, y, x])
                 
                 self.buffer.append(row)
