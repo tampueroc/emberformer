@@ -24,6 +24,8 @@ import json
 from tqdm import tqdm
 from scipy.spatial import KDTree
 import matplotlib.pyplot as plt
+import rasterio
+from rasterio.plot import show
 
 
 class DangerMapper:
@@ -37,7 +39,15 @@ class DangerMapper:
         with open(self.data_root / 'landscape' / 'indices.json', 'r') as f:
             self.indices = json.load(f)
         
+        # Load landscape geotiff to get full extent
+        landscape_path = self.data_root / 'landscape' / 'Input_Geotiff.tif'
+        with rasterio.open(landscape_path) as src:
+            self.landscape_shape = src.shape  # (height, width)
+            self.landscape_transform = src.transform
+            self.landscape_crs = src.crs
+        
         print(f"Loaded indices for {len(self.indices)} fire sequences")
+        print(f"Landscape shape: {self.landscape_shape[0]} × {self.landscape_shape[1]} pixels")
     
     def load_extreme_and_top1pct_pixels(self, u_space_dir, salience_dir):
         """Load all extreme fire pixels and identify top 1% for danger sources"""
@@ -174,10 +184,10 @@ class DangerMapper:
     
     def create_danger_grid(self, df_abs_all, df_abs_top1pct, grid_resolution=10, sigma=100):
         """
-        Create danger map using KDTree for proximity calculation
+        Create danger map over FULL LANDSCAPE using KDTree for proximity calculation
         
         Args:
-            df_abs_all: DataFrame with ALL extreme pixel absolute coordinates (for extent)
+            df_abs_all: DataFrame with ALL extreme pixel absolute coordinates
             df_abs_top1pct: DataFrame with top 1% danger source coordinates
             grid_resolution: Downsampling factor (10 = every 10th pixel)
             sigma: Distance decay parameter (pixels)
@@ -186,18 +196,19 @@ class DangerMapper:
             danger_grid, extent, df_abs_all
         """
         print(f"\n{'='*60}")
-        print(f"Creating Danger Grid")
+        print(f"Creating Danger Grid Over Full Landscape")
         print(f"{'='*60}")
         
-        # Get extent from ALL extreme pixels
-        y_min, y_max = df_abs_all['y_abs'].min(), df_abs_all['y_abs'].max()
-        x_min, x_max = df_abs_all['x_abs'].min(), df_abs_all['x_abs'].max()
+        # Get extent from FULL LANDSCAPE (not just extreme pixels)
+        landscape_height, landscape_width = self.landscape_shape
+        y_min, y_max = 0, landscape_height
+        x_min, x_max = 0, landscape_width
         
-        print(f"Grid extent: Y=[{y_min}, {y_max}], X=[{x_min}, {x_max}]")
+        print(f"Full landscape extent: Y=[{y_min}, {y_max}], X=[{x_min}, {x_max}]")
         print(f"Grid resolution: 1/{grid_resolution} sampling")
         print(f"Distance decay σ: {sigma} pixels")
         
-        # Create grid
+        # Create grid over FULL landscape
         y_grid = np.arange(y_min, y_max, grid_resolution)
         x_grid = np.arange(x_min, x_max, grid_resolution)
         
@@ -246,9 +257,26 @@ class DangerMapper:
         # Save top 1% danger sources
         df_abs_top1pct.to_csv(output_dir / 'danger_sources_top1pct.csv', index=False)
         
-        # Visualize
-        fig, ax = plt.subplots(figsize=(14, 12))
+        # Visualize with landscape background
+        print(f"Creating visualization with landscape background...")
         
+        # Load landscape for background
+        landscape_path = self.data_root / 'landscape' / 'Input_Geotiff.tif'
+        with rasterio.open(landscape_path) as src:
+            # Read first band (elevation) for background
+            landscape_band = src.read(1)
+        
+        fig, ax = plt.subplots(figsize=(16, 14))
+        
+        # Show landscape as background (grayscale)
+        # Downsample landscape for visualization
+        from scipy.ndimage import zoom
+        ds_factor = danger_grid.shape[0] / landscape_band.shape[0]
+        landscape_ds = zoom(landscape_band, ds_factor, order=1)
+        
+        ax.imshow(landscape_ds, cmap='gray', alpha=0.3, extent=extent, origin='upper')
+        
+        # Overlay danger map
         im = ax.imshow(
             danger_grid,
             extent=extent,
@@ -256,38 +284,41 @@ class DangerMapper:
             cmap='RdYlGn_r',  # Red=danger, Green=safe
             vmin=0.5,
             vmax=1.0,
+            alpha=0.7,
             interpolation='bilinear'
         )
         
-        # Overlay ALL extreme pixel locations (background)
+        # Overlay ALL extreme pixel locations (light gray)
         ax.scatter(
             df_abs_all['x_abs'],
             df_abs_all['y_abs'],
-            c='gray',
-            s=0.3,
-            alpha=0.2,
-            label=f'All extreme fire pixels ({len(df_abs_all):,})'
+            c='lightgray',
+            s=0.2,
+            alpha=0.3,
+            label=f'Extreme fire pixels ({len(df_abs_all):,})'
         )
         
-        # Highlight top 1% danger sources
+        # Highlight top 1% danger sources (bright markers)
         ax.scatter(
             df_abs_top1pct['x_abs'],
             df_abs_top1pct['y_abs'],
-            c='black',
-            s=1.5,
-            alpha=0.8,
+            c='red',
+            s=2,
+            alpha=0.9,
+            edgecolors='darkred',
+            linewidths=0.3,
             label=f'Top 1% danger sources ({len(df_abs_top1pct):,})'
         )
         
         ax.set_xlabel('X (landscape pixels)', fontsize=12, fontweight='bold')
         ax.set_ylabel('Y (landscape pixels)', fontsize=12, fontweight='bold')
-        ax.set_title('Spatial Fire Danger Map\n(Based on Proximity to Extreme Fire Hypervolume)', 
+        ax.set_title('Spatial Fire Danger Map Over Full Landscape\n(Proximity to Extreme Fire Environmental Hypervolume)', 
                     fontsize=14, fontweight='bold')
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label('Danger Score (0.5=High, 1.0=Low)', fontsize=11, fontweight='bold')
         
-        ax.legend(loc='upper right', fontsize=9)
+        ax.legend(loc='upper right', fontsize=9, framealpha=0.9)
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map.png', dpi=300, bbox_inches='tight')
