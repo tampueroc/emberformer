@@ -236,6 +236,9 @@ class CHEEnvelope:
             if len(hulls) < 10:
                 raise ValueError("Too few successful hulls, falling back to MVE")
             
+            # Store hulls for later saving
+            self.hulls = hulls
+            
             # Build occupancy grid
             volume = self.build_occupancy_grid(U, hulls, n_dims=n_dims)
             
@@ -261,12 +264,21 @@ class CHEEnvelope:
         
         # Save grid data if CHE succeeded
         if self.occupancy_grid is not None:
-            np.savez_compressed(
-                output_dir / 'envelope.npz',
-                occupancy_grid=self.occupancy_grid.astype(np.float32),
-                envelope_mask=self.envelope_mask,
-                bounds=np.array(self.bounds),
-            )
+            save_dict = {
+                'occupancy_grid': self.occupancy_grid.astype(np.float32),
+                'envelope_mask': self.envelope_mask,
+                'bounds': np.array(self.bounds),
+            }
+            
+            # Save hull vertices if available (for 3D surface plotting)
+            if hasattr(self, 'hulls') and len(self.hulls) > 0:
+                # Get combined hull vertices from all bootstrap hulls
+                all_vertices = []
+                for hull in self.hulls:
+                    all_vertices.append(hull.points[hull.vertices])
+                save_dict['hull_vertices'] = np.vstack(all_vertices).astype(np.float32)
+            
+            np.savez_compressed(output_dir / 'envelope.npz', **save_dict)
             print(f"  ✓ Saved {output_dir}/envelope.npz")
         
         # Save statistics

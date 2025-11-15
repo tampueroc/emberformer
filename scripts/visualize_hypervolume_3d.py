@@ -55,10 +55,56 @@ def visualize_3d(u_space_dir, che_dir, output_path, max_points=10000):
     ax.scatter(U_plot[:, 0], U_plot[:, 1], U_plot[:, 2], 
               c='blue', alpha=0.3, s=1, label='Extreme fire pixels')
     
-    # Plot envelope boundary (wireframe of occupied cells)
-    # For 3D, we need to extract boundary voxels
-    # Simplified: plot grid points inside envelope
-    if envelope_mask.ndim == 2:
+    # Plot 3D convex hull surface
+    if envelope_mask.ndim == 3:
+        print("3D envelope detected, extracting isosurface...")
+        
+        # Option 1: Plot hull vertices if available
+        if 'hull_vertices' in che:
+            hull_verts = che['hull_vertices']
+            # Subsample vertices for cleaner visualization
+            if len(hull_verts) > 5000:
+                idx = np.random.choice(len(hull_verts), 5000, replace=False)
+                hull_verts = hull_verts[idx]
+            
+            print(f"  Plotting {len(hull_verts)} hull boundary vertices...")
+            ax.scatter(hull_verts[:, 0], hull_verts[:, 1], hull_verts[:, 2],
+                      c='red', alpha=0.6, s=20, marker='o', 
+                      label='CHE envelope surface', edgecolors='darkred', linewidths=0.5)
+        
+        # Option 2: Extract isosurface from occupancy grid
+        else:
+            print("  Extracting envelope boundary from occupancy grid...")
+            from skimage import measure
+            
+            # Create isosurface at occupancy threshold
+            try:
+                verts, faces, normals, values = measure.marching_cubes(
+                    occupancy_grid, 
+                    level=0.5,  # Binary mask
+                    spacing=(
+                        (bounds[1][0]-bounds[0][0])/occupancy_grid.shape[0],
+                        (bounds[1][1]-bounds[0][1])/occupancy_grid.shape[1],
+                        (bounds[1][2]-bounds[0][2])/occupancy_grid.shape[2]
+                    )
+                )
+                
+                # Transform to U-space coordinates
+                verts[:, 0] += bounds[0][0]
+                verts[:, 1] += bounds[0][1]
+                verts[:, 2] += bounds[0][2]
+                
+                # Plot as mesh
+                from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+                mesh = Poly3DCollection(verts[faces], alpha=0.3, facecolor='red', 
+                                       edgecolor='darkred', linewidths=0.2)
+                ax.add_collection3d(mesh)
+                print(f"  Plotted {len(faces)} surface triangles")
+                
+            except ImportError:
+                print("  scikit-image not available, using hull vertices instead")
+    
+    elif envelope_mask.ndim == 2:
         print("2D envelope detected, extending to 3D visualization...")
         # For 2D envelope in U1-U2, show as vertical extrusion in U1-U2-U3 space
         grid_res = envelope_mask.shape[0]
