@@ -310,6 +310,11 @@ class DangerMapper:
             interpolation='bilinear'
         )
         
+        # Sanity check: Print coordinate ranges
+        print(f"  Danger sources coords: Y=[{df_abs_top1pct['y_abs'].min():.0f}, {df_abs_top1pct['y_abs'].max():.0f}], "
+              f"X=[{df_abs_top1pct['x_abs'].min():.0f}, {df_abs_top1pct['x_abs'].max():.0f}]")
+        print(f"  Landscape extent: Y=[0, {self.landscape_shape[0]}], X=[0, {self.landscape_shape[1]}]")
+        
         # Highlight top 1% danger sources ONLY (don't plot all 1M pixels)
         ax.scatter(
             df_abs_top1pct['x_abs'],

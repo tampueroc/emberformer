@@ -4,7 +4,7 @@
 # Stage 1: Salience Extraction
 extraction:
   importance_threshold: 99  # Top 1% Grad-CAM pixels
-  batch_size: 4
+  batch_size: 6
   buffer_size: 1000000  # Flush to Parquet every 1M rows
   num_samples: -1  # -1 = all samples in split
   split: train  # train, val, or test
@@ -31,7 +31,7 @@ visualization:
 
 # Stage 5: Danger Map
 danger_map:
-  grid_resolution: 10  # Spatial downsampling (every 10th pixel)
+  grid_resolution: 1  # Full resolution (1:1 with landscape)
   sigma: 100  # Distance decay parameter (pixels)
 
 # I/O paths
