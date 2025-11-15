@@ -137,6 +137,7 @@ class DangerMapper:
         print(f"Found {len(unique_sequences)} unique fire sequences")
         
         absolute_coords = []
+        invalid_coords = []
         
         # Process each sequence
         for seq_id in tqdm(unique_sequences, desc="Mapping sequences"):
@@ -158,12 +159,23 @@ class DangerMapper:
                 x_orig = (row['x'] / self.resize_to) * orig_width
                 
                 # Add crop offset to get absolute tile coordinates
-                y_abs = y_min + y_orig
-                x_abs = x_min + x_orig
+                y_abs = int(y_min + y_orig)
+                x_abs = int(x_min + x_orig)
+                
+                # VALIDATION: Check if coordinates are within landscape bounds
+                if y_abs < 0 or y_abs >= self.landscape_shape[0] or \
+                   x_abs < 0 or x_abs >= self.landscape_shape[1]:
+                    invalid_coords.append({
+                        'seq_id': seq_id,
+                        'y_abs': y_abs,
+                        'x_abs': x_abs,
+                        'bounds': (y_min, y_max, x_min, x_max)
+                    })
+                    continue
                 
                 absolute_coords.append({
-                    'y_abs': int(y_abs),
-                    'x_abs': int(x_abs),
+                    'y_abs': y_abs,
+                    'x_abs': x_abs,
                     'y_resized': row['y'],
                     'x_resized': row['x'],
                     'gradcam': row['gradcam'],
@@ -177,6 +189,14 @@ class DangerMapper:
         print(f"\n✓ Mapped {len(df_abs):,} pixels to absolute coordinates")
         print(f"  Y range: [{df_abs['y_abs'].min()}, {df_abs['y_abs'].max()}]")
         print(f"  X range: [{df_abs['x_abs'].min()}, {df_abs['x_abs'].max()}]")
+        print(f"  Landscape bounds: Y=[0, {self.landscape_shape[0]}], X=[0, {self.landscape_shape[1]}]")
+        
+        if invalid_coords:
+            print(f"\n⚠️  WARNING: Found {len(invalid_coords)} pixels with OUT-OF-BOUNDS coordinates!")
+            print(f"  First few invalid examples:")
+            for inv in invalid_coords[:5]:
+                print(f"    Seq {inv['seq_id']}: ({inv['y_abs']}, {inv['x_abs']}) with bounds {inv['bounds']}")
+        
         print(f"  Sequences processed: {len(unique_sequences)}")
         print(f"{'='*60}\n")
         
