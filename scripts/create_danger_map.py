@@ -517,6 +517,7 @@ class DangerMapper:
         # Custom colormap: black (0.0 = max danger) → red → yellow → white (1.0 = safe)
         colors = ['#000000', '#8B0000', '#FF4500', '#FFA500', '#FFFF00', '#FFFFFF']
         cmap_danger = LinearSegmentedColormap.from_list('danger', colors, N=256)
+        cmap_danger.set_bad(color='none', alpha=0)  # Make NaN transparent
         
         danger_masked = np.ma.masked_invalid(danger_grid)
         
