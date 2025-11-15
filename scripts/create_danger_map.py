@@ -247,12 +247,12 @@ class DangerMapper:
         # Load landscape to create valid data mask
         landscape_path = self.data_root / 'landscape' / 'Input_Geotiff.tif'
         with rasterio.open(landscape_path) as src:
-            # Band 4 = fuel_load (most relevant for fire)
-            fuel_load = src.read(4).astype(float)
+            # Band 1 = elevation
+            elevation = src.read(1).astype(float)
             # Create mask for valid landscape data (not NoData)
-            valid_mask = fuel_load != -9999
+            valid_mask = elevation != -9999
             # Mask NoData for visualization
-            fuel_load[~valid_mask] = np.nan
+            elevation[~valid_mask] = np.nan
         
         # Downsample valid_mask to match danger_grid resolution
         from scipy.ndimage import zoom
@@ -279,14 +279,14 @@ class DangerMapper:
         df_abs_top1pct.to_csv(output_dir / 'danger_sources_top1pct.csv', index=False)
         
         # Visualize with landscape background
-        print(f"Creating visualization with fuel load background...")
+        print(f"Creating visualization with elevation background...")
         
         fig, ax = plt.subplots(figsize=(18, 14))
         
-        # Show fuel load as background
+        # Show elevation as background
         im_bg = ax.imshow(
-            fuel_load, 
-            cmap='YlGn',  # Yellow to Green for fuel
+            elevation, 
+            cmap='terrain',  # Terrain colormap for elevation
             alpha=0.5, 
             extent=extent, 
             origin='upper',
@@ -342,14 +342,14 @@ class DangerMapper:
         plt.savefig(output_dir / 'danger_map.png', dpi=300, bbox_inches='tight')
         plt.close()
         
-        # Also create fuel-only map (no danger overlay)
-        print(f"Creating fuel-only map...")
+        # Also create elevation-only map (no danger overlay)
+        print(f"Creating elevation-only map...")
         
         fig, ax = plt.subplots(figsize=(18, 14))
         
-        im_fuel = ax.imshow(
-            fuel_load, 
-            cmap='YlGn',
+        im_elev = ax.imshow(
+            elevation, 
+            cmap='terrain',
             extent=extent, 
             origin='upper',
             interpolation='bilinear'
@@ -357,14 +357,14 @@ class DangerMapper:
         
         ax.set_xlabel('X (landscape pixels)', fontsize=13, fontweight='bold')
         ax.set_ylabel('Y (landscape pixels)', fontsize=13, fontweight='bold')
-        ax.set_title('Fuel Load: Full Landscape', 
+        ax.set_title('Elevation: Full Landscape', 
                     fontsize=15, fontweight='bold', pad=20)
         
-        cbar = plt.colorbar(im_fuel, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label('Fuel Load', fontsize=11, fontweight='bold')
+        cbar = plt.colorbar(im_elev, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
+        cbar.set_label('Elevation (m)', fontsize=11, fontweight='bold')
         
         plt.tight_layout()
-        plt.savefig(output_dir / 'fuel_load_map.png', dpi=300, bbox_inches='tight')
+        plt.savefig(output_dir / 'elevation_map.png', dpi=300, bbox_inches='tight')
         plt.close()
         
         print(f"{'='*60}")
@@ -374,7 +374,7 @@ class DangerMapper:
         print(f"  {output_dir}/extreme_pixel_locations_all.csv ({len(df_abs_all):,} pixels)")
         print(f"  {output_dir}/danger_sources_top1pct.csv ({len(df_abs_top1pct):,} pixels)")
         print(f"  {output_dir}/danger_map.png")
-        print(f"  {output_dir}/fuel_load_map.png")
+        print(f"  {output_dir}/elevation_map.png")
         print(f"{'='*60}\n")
 
 
