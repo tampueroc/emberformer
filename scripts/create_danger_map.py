@@ -1,329 +1,322 @@
 """
-Create Spatial Danger Map from Hypervolume Top 1% Pixels
+Create Spatial Danger Map from Environmental Hypervolume
 
-Stage 5 of hypervolume pipeline:
-- Load top 1% important pixels from U-space
-- Map back to absolute landscape coordinates using indices.json
-- Account for resize transformation (406×406 → original)
-- Compute spatial danger map based on proximity to extreme pixels
+Stage 5 of hypervolume pipeline - CORRECT METHODOLOGY:
+- Load full landscape GeoTIFF (all environmental features)
+- For each landscape pixel: extract features → engineer → z-score → PCA
+- Check if environmental conditions fall inside CHE envelope
+- Assign danger based on envelope membership/distance
+
+This identifies areas with environmental conditions matching extreme fires,
+regardless of whether fires occurred there in training data.
 
 Usage:
     python scripts/create_danger_map.py \
         --u_space data/u_space \
-        --salience data/salience \
+        --che data/che \
         --data_root ~/data/deep_crown_dataset/organized_spreads \
         --output data/danger_map
 """
 
 import numpy as np
-import pandas as pd
-import pyarrow.parquet as pq
 from pathlib import Path
 import argparse
 import json
 from tqdm import tqdm
-from scipy.spatial import KDTree
 import matplotlib.pyplot as plt
 import rasterio
-from rasterio.plot import show
+from matplotlib.colors import LinearSegmentedColormap
 
 
 class DangerMapper:
-    """Map U-space top 1% pixels back to absolute landscape coordinates"""
+    """Create danger map by projecting landscape to U-space and checking envelope membership"""
     
-    def __init__(self, data_root, resize_to=406):
+    def __init__(self, data_root):
         self.data_root = Path(data_root)
-        self.resize_to = resize_to
         
-        # Load spatial indices (crop boundaries)
-        with open(self.data_root / 'landscape' / 'indices.json', 'r') as f:
-            self.indices = json.load(f)
-        
-        # Load landscape geotiff to get full extent
+        # Load landscape
         landscape_path = self.data_root / 'landscape' / 'Input_Geotiff.tif'
+        print(f"Loading landscape from {landscape_path}...")
+        
         with rasterio.open(landscape_path) as src:
-            self.landscape_shape = src.shape  # (height, width)
+            self.landscape = src.read().astype(np.float32)  # [8, H, W]
+            self.landscape_shape = src.shape
             self.landscape_transform = src.transform
             self.landscape_crs = src.crs
+            self.nodata = -9999.0
         
-        print(f"Loaded indices for {len(self.indices)} fire sequences")
-        print(f"Landscape shape: {self.landscape_shape[0]} × {self.landscape_shape[1]} pixels")
+        print(f"  Shape: {self.landscape_shape[0]} × {self.landscape_shape[1]} pixels")
+        print(f"  Bands: {self.landscape.shape[0]}")
+        print(f"  CRS: {self.landscape_crs}")
+        
+        # Create valid data mask
+        self.valid_mask = self.landscape[0] != self.nodata
+        print(f"  Valid pixels: {self.valid_mask.sum():,} / {self.valid_mask.size:,} "
+              f"({100*self.valid_mask.mean():.1f}%)")
     
-    def load_extreme_and_top1pct_pixels(self, u_space_dir, salience_dir):
-        """Load all extreme fire pixels and identify top 1% for danger sources"""
-        print(f"\n{'='*60}")
-        print(f"Loading Extreme Fire Pixels")
-        print(f"{'='*60}")
-        
-        # Load U-space data
+    def load_transformation(self, u_space_dir):
+        """Load PCA transformation metadata from prep_u_space stage"""
         u_space_dir = Path(u_space_dir)
-        data = np.load(u_space_dir / 'extreme.npz')
-        gradcam = data['gradcam']
         
-        # Filter for top 1% as danger sources
-        threshold_99 = np.percentile(gradcam, 99)
-        top_1pct_mask = gradcam > threshold_99
+        print(f"\nLoading PCA transformation from {u_space_dir}...")
         
-        print(f"Top 1% Grad-CAM threshold: {threshold_99:.4f}")
-        print(f"Top 1% pixels (danger sources): {top_1pct_mask.sum():,} / {len(gradcam):,}")
+        with open(u_space_dir / 'transform.json', 'r') as f:
+            self.transform_meta = json.load(f)
         
-        # Load salience parquet files - get ALL extreme fire pixels
-        salience_dir = Path(salience_dir)
+        self.feature_names = self.transform_meta['feature_names']
+        self.scaler_mean = np.array(self.transform_meta['scaler_mean'])
+        self.scaler_std = np.array(self.transform_meta['scaler_std'])
+        self.pca_components = np.array(self.transform_meta['pca_components'])
+        self.n_components = self.transform_meta['n_components']
         
-        # Get extreme fire threshold from quantiles
-        with open(salience_dir / 'quantiles.json', 'r') as f:
-            quantiles = json.load(f)
-        extreme_threshold = quantiles['p99']
-        
-        print(f"\nLoading ALL extreme fire pixels (fire_intensity > {extreme_threshold:.2f})...")
-        
-        parquet_files = sorted(salience_dir.glob('part-*.parquet'))
-        
-        # Load all extreme fire pixels
-        all_rows = []
-        top_1pct_rows = []
-        row_offset = 0
-        
-        for pfile in tqdm(parquet_files, desc="Loading parquet"):
-            # Filter for extreme fires during read
-            table = pq.read_table(pfile, filters=[
-                ('fire_intensity', '>', extreme_threshold)
-            ])
-            df = table.to_pandas()
-            
-            if len(df) == 0:
-                continue
-            
-            # Add all extreme pixels
-            all_rows.append(df)
-            
-            # Track which rows are in top 1% Grad-CAM (danger sources)
-            file_size = len(df)
-            file_mask = top_1pct_mask[row_offset:row_offset + file_size]
-            
-            if file_mask.sum() > 0:
-                df_top = df[file_mask].copy()
-                top_1pct_rows.append(df_top)
-            
-            row_offset += file_size
-        
-        if len(all_rows) == 0:
-            raise ValueError("No extreme fire pixels found!")
-        
-        df_all_extreme = pd.concat(all_rows, ignore_index=True)
-        df_top_1pct = pd.concat(top_1pct_rows, ignore_index=True) if top_1pct_rows else pd.DataFrame()
-        
-        print(f"\n✓ Loaded {len(df_all_extreme):,} total extreme fire pixels")
-        print(f"✓ Identified {len(df_top_1pct):,} top 1% danger sources")
-        print(f"{'='*60}\n")
-        
-        return df_all_extreme, df_top_1pct
+        print(f"  Features: {self.feature_names}")
+        print(f"  PCA components: {self.n_components}")
+        print(f"  Total variance: {self.transform_meta['total_variance']*100:.2f}%")
     
-    def map_to_absolute_coords(self, df):
-        """
-        Map resized coordinates back to absolute landscape coordinates
+    def load_envelope(self, che_dir):
+        """Load CHE envelope from stage 3"""
+        che_dir = Path(che_dir)
         
-        Process:
-        1. Use sequence_id from dataframe (tracked during extraction)
-        2. Lookup crop boundaries from indices.json
-        3. Map (y_resized, x_resized) → (y_tile, x_tile)
-        """
-        print(f"\n{'='*60}")
-        print(f"Mapping to Absolute Coordinates")
-        print(f"{'='*60}")
+        print(f"\nLoading CHE envelope from {che_dir}...")
         
-        # Get unique sequences
-        unique_sequences = df['sequence_id'].unique()
-        print(f"Found {len(unique_sequences)} unique fire sequences")
+        # Load envelope data
+        envelope_data = np.load(che_dir / 'envelope.npz')
+        self.occupancy_grid = envelope_data['occupancy_grid']
+        self.envelope_mask = envelope_data['envelope_mask']
+        self.envelope_bounds = envelope_data['bounds']
         
-        absolute_coords = []
-        invalid_coords = []
+        # Load summary
+        with open(che_dir / 'summary.json', 'r') as f:
+            che_summary = json.load(f)
         
-        # Process each sequence
-        for seq_id in tqdm(unique_sequences, desc="Mapping sequences"):
-            df_seq = df[df['sequence_id'] == seq_id]
-            
-            if seq_id not in self.indices:
-                print(f"  ⚠️  Sequence {seq_id} not in indices.json, skipping {len(df_seq)} pixels")
-                continue
-            
-            # Get crop boundaries for this sequence
-            y_min, y_max, x_min, x_max = self.indices[seq_id]
-            orig_height = y_max - y_min
-            orig_width = x_max - x_min
-            
-            # Map all pixels from this sequence
-            for _, row in df_seq.iterrows():
-                # Inverse resize: 406×406 → original crop size
-                y_orig = (row['y'] / self.resize_to) * orig_height
-                x_orig = (row['x'] / self.resize_to) * orig_width
-                
-                # Add crop offset to get absolute tile coordinates
-                y_abs = int(y_min + y_orig)
-                x_abs = int(x_min + x_orig)
-                
-                # VALIDATION: Check if coordinates are within landscape bounds
-                if y_abs < 0 or y_abs >= self.landscape_shape[0] or \
-                   x_abs < 0 or x_abs >= self.landscape_shape[1]:
-                    invalid_coords.append({
-                        'seq_id': seq_id,
-                        'y_abs': y_abs,
-                        'x_abs': x_abs,
-                        'bounds': (y_min, y_max, x_min, x_max)
-                    })
-                    continue
-                
-                absolute_coords.append({
-                    'y_abs': y_abs,
-                    'x_abs': x_abs,
-                    'y_resized': row['y'],
-                    'x_resized': row['x'],
-                    'gradcam': row['gradcam'],
-                    'fire_intensity': row['fire_intensity'],
-                    'sequence_id': seq_id,
-                    'sample_id': row['sample_id'],
-                })
-        
-        df_abs = pd.DataFrame(absolute_coords)
-        
-        print(f"\n✓ Mapped {len(df_abs):,} pixels to absolute coordinates")
-        print(f"  Y range: [{df_abs['y_abs'].min()}, {df_abs['y_abs'].max()}]")
-        print(f"  X range: [{df_abs['x_abs'].min()}, {df_abs['x_abs'].max()}]")
-        print(f"  Landscape bounds: Y=[0, {self.landscape_shape[0]}], X=[0, {self.landscape_shape[1]}]")
-        
-        if invalid_coords:
-            print(f"\n⚠️  WARNING: Found {len(invalid_coords)} pixels with OUT-OF-BOUNDS coordinates!")
-            print(f"  First few invalid examples:")
-            for inv in invalid_coords[:5]:
-                print(f"    Seq {inv['seq_id']}: ({inv['y_abs']}, {inv['x_abs']}) with bounds {inv['bounds']}")
-        
-        print(f"  Sequences processed: {len(unique_sequences)}")
-        print(f"{'='*60}\n")
-        
-        return df_abs
+        print(f"  Method: {che_summary['method']}")
+        if 'area' in che_summary:
+            print(f"  Envelope area: {che_summary['area']:.2e}")
+        print(f"  Grid resolution: {self.occupancy_grid.shape}")
     
-    def create_danger_grid(self, df_abs_all, df_abs_top1pct, grid_resolution=10, sigma=100):
+    def engineer_pixel_features(self, pixel_features):
         """
-        Create danger map over FULL LANDSCAPE using KDTree for proximity calculation
+        Apply same feature engineering as prep_u_space
         
         Args:
-            df_abs_all: DataFrame with ALL extreme pixel absolute coordinates
-            df_abs_top1pct: DataFrame with top 1% danger source coordinates
-            grid_resolution: Downsampling factor (10 = every 10th pixel)
-            sigma: Distance decay parameter (pixels)
+            pixel_features: dict with raw landscape bands
         
         Returns:
-            danger_grid, extent, df_abs_all
+            feature vector matching self.feature_names order
+        """
+        features = []
+        
+        for feat_name in self.feature_names:
+            if feat_name == 'elevation':
+                features.append(pixel_features['elevation'])
+            elif feat_name == 'slope':
+                features.append(pixel_features['slope'])
+            elif feat_name == 'fuel_load':
+                features.append(pixel_features['fuel_load'])
+            elif feat_name == 'vegetation':
+                features.append(pixel_features['vegetation'])
+            elif feat_name == 'canopy_height':
+                features.append(pixel_features['canopy_height'])
+            elif feat_name == 'canopy_density':
+                features.append(pixel_features['canopy_density'])
+            elif feat_name == 'aspect_cos':
+                aspect_rad = pixel_features['aspect'] * np.pi / 180
+                features.append(np.cos(aspect_rad))
+            elif feat_name == 'aspect_sin':
+                aspect_rad = pixel_features['aspect'] * np.pi / 180
+                features.append(np.sin(aspect_rad))
+            elif feat_name == 'wind_speed':
+                features.append(pixel_features['wind_speed'])
+            elif feat_name == 'wind_u':
+                # Use typical summer wind (or could load from weather data)
+                features.append(pixel_features['wind_speed'] * np.cos(pixel_features['wind_direction'] * np.pi / 180))
+            elif feat_name == 'wind_v':
+                features.append(pixel_features['wind_speed'] * np.sin(pixel_features['wind_direction'] * np.pi / 180))
+        
+        return np.array(features, dtype=np.float32)
+    
+    def project_to_uspace(self, X):
+        """Project features to U-space using saved PCA"""
+        # Z-score normalize
+        X_scaled = (X - self.scaler_mean) / (self.scaler_std + 1e-8)
+        
+        # PCA projection
+        U = X_scaled @ self.pca_components.T
+        
+        return U
+    
+    def check_envelope_membership(self, U):
+        """Check if U-space point is inside CHE envelope"""
+        u1, u2 = U[0], U[1]
+        
+        # Get bounds
+        u1_min, u2_min = self.envelope_bounds[0]
+        u1_max, u2_max = self.envelope_bounds[1]
+        
+        # Check if outside bounds
+        if u1 < u1_min or u1 > u1_max or u2 < u2_min or u2 > u2_max:
+            return False, float('inf')
+        
+        # Map to grid indices
+        i = int((u1 - u1_min) / (u1_max - u1_min) * (self.occupancy_grid.shape[1] - 1))
+        j = int((u2 - u2_min) / (u2_max - u2_min) * (self.occupancy_grid.shape[0] - 1))
+        
+        # Clamp to grid bounds
+        i = np.clip(i, 0, self.occupancy_grid.shape[1] - 1)
+        j = np.clip(j, 0, self.occupancy_grid.shape[0] - 1)
+        
+        # Check envelope mask
+        inside = bool(self.envelope_mask[j, i])
+        
+        # Get occupancy score (distance proxy)
+        occupancy = float(self.occupancy_grid[j, i])
+        
+        return inside, 1.0 - occupancy
+    
+    def create_danger_map(self, typical_wind_speed=5.0, typical_wind_dir=180.0, chunk_size=1000):
+        """
+        Create danger map over full landscape
+        
+        Args:
+            typical_wind_speed: Typical summer wind speed (m/s) to use for all pixels
+            typical_wind_dir: Typical wind direction (degrees)
+            chunk_size: Process landscape in chunks (rows at a time)
+        
+        Returns:
+            danger_grid: [H, W] array with danger scores
         """
         print(f"\n{'='*60}")
-        print(f"Creating Danger Grid Over Full Landscape")
+        print(f"Creating Danger Map via U-Space Projection")
         print(f"{'='*60}")
+        print(f"Landscape: {self.landscape_shape[0]} × {self.landscape_shape[1]} pixels")
+        print(f"Using typical wind: {typical_wind_speed} m/s @ {typical_wind_dir}°")
+        print(f"Processing in chunks of {chunk_size} rows...")
         
-        # Get extent from FULL LANDSCAPE (not just extreme pixels)
-        landscape_height, landscape_width = self.landscape_shape
-        y_min, y_max = 0, landscape_height
-        x_min, x_max = 0, landscape_width
+        H, W = self.landscape_shape
+        danger_grid = np.full((H, W), np.nan, dtype=np.float32)
         
-        print(f"Full landscape extent: Y=[{y_min}, {y_max}], X=[{x_min}, {x_max}]")
-        print(f"Grid resolution: 1/{grid_resolution} sampling")
-        print(f"Distance decay σ: {sigma} pixels")
+        # Band mapping
+        band_idx = {
+            'elevation': 0,
+            'slope': 1,
+            'aspect': 2,
+            'fuel_load': 3,
+            'vegetation': 4,
+            'canopy_height': 5,
+            'canopy_density': 6,
+        }
         
-        # Create grid over FULL landscape
-        y_grid = np.arange(y_min, y_max, grid_resolution)
-        x_grid = np.arange(x_min, x_max, grid_resolution)
+        # Process in chunks (row-wise)
+        for start_row in tqdm(range(0, H, chunk_size), desc="Processing landscape"):
+            end_row = min(start_row + chunk_size, H)
+            
+            for y in range(start_row, end_row):
+                for x in range(W):
+                    # Skip invalid pixels
+                    if not self.valid_mask[y, x]:
+                        continue
+                    
+                    # Extract environmental features
+                    pixel_features = {
+                        'elevation': self.landscape[band_idx['elevation'], y, x],
+                        'slope': self.landscape[band_idx['slope'], y, x],
+                        'aspect': self.landscape[band_idx['aspect'], y, x],
+                        'fuel_load': self.landscape[band_idx['fuel_load'], y, x],
+                        'vegetation': self.landscape[band_idx['vegetation'], y, x],
+                        'canopy_height': self.landscape[band_idx['canopy_height'], y, x],
+                        'canopy_density': self.landscape[band_idx['canopy_density'], y, x],
+                        'wind_speed': typical_wind_speed,
+                        'wind_direction': typical_wind_dir,
+                    }
+                    
+                    # Engineer features
+                    X = self.engineer_pixel_features(pixel_features)
+                    
+                    # Project to U-space
+                    U = self.project_to_uspace(X)
+                    
+                    # Check envelope membership
+                    inside, distance = self.check_envelope_membership(U)
+                    
+                    if inside:
+                        # Inside envelope = high danger (0.5-0.7 based on occupancy)
+                        danger_grid[y, x] = 0.5 + 0.2 * distance
+                    else:
+                        # Outside envelope = lower danger (0.7-1.0 based on distance)
+                        danger_grid[y, x] = 0.7 + 0.3 * min(distance, 1.0)
         
-        print(f"Grid shape: {len(y_grid)} × {len(x_grid)} = {len(y_grid) * len(x_grid):,} cells")
-        
-        # Build KDTree from TOP 1% danger sources ONLY
-        danger_sources = df_abs_top1pct[['y_abs', 'x_abs']].values
-        print(f"Using {len(danger_sources):,} top 1% pixels as danger sources")
-        tree = KDTree(danger_sources)
-        
-        # Compute danger for each grid cell
-        danger_grid = np.zeros((len(y_grid), len(x_grid)))
-        
-        for i, y in enumerate(tqdm(y_grid, desc="Computing danger")):
-            for j, x in enumerate(x_grid):
-                # Find distance to nearest top 1% danger source
-                dist, _ = tree.query([y, x])
-                
-                # Danger score: 0.5 (high) near danger sources, 1.0 (low) far away
-                danger_grid[i, j] = 0.5 + 0.5 * (1 - np.exp(-dist / sigma))
-        
-        extent = [x_min, x_max, y_min, y_max]
-        
-        print(f"\n✓ Danger grid created")
-        print(f"  Danger range: [{danger_grid.min():.3f}, {danger_grid.max():.3f}]")
-        print(f"  Mean danger: {danger_grid.mean():.3f}")
+        print(f"\n✓ Danger map created")
+        valid_danger = danger_grid[~np.isnan(danger_grid)]
+        print(f"  Valid pixels: {len(valid_danger):,}")
+        print(f"  Danger range: [{valid_danger.min():.3f}, {valid_danger.max():.3f}]")
+        print(f"  Mean danger: {valid_danger.mean():.3f}")
+        print(f"  High danger pixels (< 0.7): {(valid_danger < 0.7).sum():,}")
         print(f"{'='*60}\n")
         
-        return danger_grid, extent, df_abs_all, df_abs_top1pct
+        return danger_grid
     
-    def save_results(self, danger_grid, extent, df_abs_all, df_abs_top1pct, output_dir):
-        """Save danger map and extreme pixel locations"""
+    def save_results(self, danger_grid, output_dir):
+        """Save danger map and visualizations"""
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Load landscape to create valid data mask
-        landscape_path = self.data_root / 'landscape' / 'Input_Geotiff.tif'
-        with rasterio.open(landscape_path) as src:
-            # Band 1 = elevation
-            elevation = src.read(1).astype(float)
-            # Create mask for valid landscape data (not NoData)
-            valid_mask = elevation != -9999
-            # Mask NoData for visualization
-            elevation[~valid_mask] = np.nan
+        H, W = self.landscape_shape
+        extent = [0, W, H, 0]  # [x_min, x_max, y_max, y_min] for origin='upper'
         
-        # Downsample valid_mask to match danger_grid resolution
-        from scipy.ndimage import zoom
-        zoom_factor = (danger_grid.shape[0] / valid_mask.shape[0], 
-                      danger_grid.shape[1] / valid_mask.shape[1])
-        valid_mask_ds = zoom(valid_mask.astype(float), zoom_factor, order=0) > 0.5
-        
-        # Apply landscape mask to danger grid
-        danger_grid_masked = danger_grid.copy()
-        danger_grid_masked[~valid_mask_ds] = np.nan
-        
-        # Save danger grid as numpy
+        # Save danger grid
         np.savez_compressed(
             output_dir / 'danger_grid.npz',
-            danger=danger_grid_masked,
-            extent=extent,
-            valid_mask=valid_mask_ds
+            danger=danger_grid,
+            extent=extent
         )
         
-        # Save all extreme pixel locations
-        df_abs_all.to_csv(output_dir / 'extreme_pixel_locations_all.csv', index=False)
+        print(f"Creating visualizations...")
         
-        # Save top 1% danger sources
-        df_abs_top1pct.to_csv(output_dir / 'danger_sources_top1pct.csv', index=False)
-        
-        # Visualize with landscape background
-        print(f"Creating visualization with elevation background...")
-        
+        # 1. Elevation-only map
         fig, ax = plt.subplots(figsize=(18, 14))
         
-        # Show elevation as background
-        im_bg = ax.imshow(
-            elevation, 
-            cmap='terrain',  # Terrain colormap for elevation
-            alpha=0.5, 
-            extent=extent, 
+        elevation = self.landscape[0].copy()
+        elevation[elevation == self.nodata] = np.nan
+        
+        ax.imshow(
+            elevation,
+            cmap='terrain',
+            extent=extent,
             origin='upper',
             interpolation='bilinear'
         )
         
-        # Overlay danger map - mask only invalid areas (show all danger levels)
-        danger_masked = np.ma.masked_where(
-            np.isnan(danger_grid_masked), 
-            danger_grid_masked
+        ax.set_xlabel('X (landscape pixels)', fontsize=13, fontweight='bold')
+        ax.set_ylabel('Y (landscape pixels)', fontsize=13, fontweight='bold')
+        ax.set_title('Elevation: Full Landscape',
+                    fontsize=15, fontweight='bold', pad=20)
+        
+        cbar = plt.colorbar(ax.images[0], ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
+        cbar.set_label('Elevation (m)', fontsize=11, fontweight='bold')
+        
+        plt.tight_layout()
+        plt.savefig(output_dir / 'elevation_map.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # 2. Danger map with elevation background
+        fig, ax = plt.subplots(figsize=(18, 14))
+        
+        # Show elevation background
+        ax.imshow(
+            elevation,
+            cmap='terrain',
+            alpha=0.4,
+            extent=extent,
+            origin='upper',
+            interpolation='bilinear'
         )
         
-        # Use colormap: black-orange (0.5) → white (1.0)
-        from matplotlib.colors import LinearSegmentedColormap
-        colors = ['#000000', '#FF4500', '#FFA500', '#FFFF00', '#FFFFFF']  # black→red-orange→orange→yellow→white
-        n_bins = 100
-        cmap_danger = LinearSegmentedColormap.from_list('danger', colors, N=n_bins)
+        # Overlay danger map
+        # Custom colormap: black-orange (0.5) → white (1.0)
+        colors = ['#000000', '#FF4500', '#FFA500', '#FFFF00', '#FFFFFF']
+        cmap_danger = LinearSegmentedColormap.from_list('danger', colors, N=100)
+        
+        danger_masked = np.ma.masked_invalid(danger_grid)
         
         im = ax.imshow(
             danger_masked,
@@ -336,104 +329,91 @@ class DangerMapper:
             interpolation='bilinear'
         )
         
-        # Sanity check: Print coordinate ranges
-        print(f"  Danger sources coords: Y=[{df_abs_top1pct['y_abs'].min():.0f}, {df_abs_top1pct['y_abs'].max():.0f}], "
-              f"X=[{df_abs_top1pct['x_abs'].min():.0f}, {df_abs_top1pct['x_abs'].max():.0f}]")
-        print(f"  Landscape extent: Y=[0, {self.landscape_shape[0]}], X=[0, {self.landscape_shape[1]}]")
-        
         ax.set_xlabel('X (landscape pixels)', fontsize=13, fontweight='bold')
         ax.set_ylabel('Y (landscape pixels)', fontsize=13, fontweight='bold')
-        ax.set_title('Fire Danger Map: Full Landscape\nDanger = Proximity to Extreme Fire Environmental Hypervolume', 
+        ax.set_title('Fire Danger Map: Environmental Hypervolume Projection\n'
+                    'Areas with conditions matching extreme fire events',
                     fontsize=15, fontweight='bold', pad=20)
         
-        # Set y-axis limits explicitly with 0 at top
-        ax.set_ylim(self.landscape_shape[0], 0)
-        
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label('Danger Score\n(0.5=High Danger, 1.0=Low Danger)', fontsize=11, fontweight='bold')
+        cbar.set_label('Danger Score\n(0.5=Extreme, 1.0=Safe)', fontsize=11, fontweight='bold')
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map.png', dpi=300, bbox_inches='tight')
         plt.close()
         
-        # Also create elevation-only map (no danger overlay)
-        print(f"Creating elevation-only map...")
-        
+        # 3. Danger-only map (no background)
         fig, ax = plt.subplots(figsize=(18, 14))
         
-        im_elev = ax.imshow(
-            elevation, 
-            cmap='terrain',
-            extent=extent, 
+        im = ax.imshow(
+            danger_masked,
+            extent=extent,
             origin='upper',
+            cmap=cmap_danger,
+            vmin=0.5,
+            vmax=1.0,
             interpolation='bilinear'
         )
         
         ax.set_xlabel('X (landscape pixels)', fontsize=13, fontweight='bold')
         ax.set_ylabel('Y (landscape pixels)', fontsize=13, fontweight='bold')
-        ax.set_title('Elevation: Full Landscape', 
+        ax.set_title('Fire Danger Map (Danger Only)',
                     fontsize=15, fontweight='bold', pad=20)
         
-        # Set y-axis limits explicitly with 0 at top
-        ax.set_ylim(self.landscape_shape[0], 0)
-        
-        cbar = plt.colorbar(im_elev, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label('Elevation (m)', fontsize=11, fontweight='bold')
+        cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
+        cbar.set_label('Danger Score\n(0.5=Extreme, 1.0=Safe)', fontsize=11, fontweight='bold')
         
         plt.tight_layout()
-        plt.savefig(output_dir / 'elevation_map.png', dpi=300, bbox_inches='tight')
+        plt.savefig(output_dir / 'danger_map_only.png', dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"{'='*60}")
+        print(f"\n{'='*60}")
         print(f"✓ Saved Results")
         print(f"{'='*60}")
         print(f"  {output_dir}/danger_grid.npz")
-        print(f"  {output_dir}/extreme_pixel_locations_all.csv ({len(df_abs_all):,} pixels)")
-        print(f"  {output_dir}/danger_sources_top1pct.csv ({len(df_abs_top1pct):,} pixels)")
-        print(f"  {output_dir}/danger_map.png")
         print(f"  {output_dir}/elevation_map.png")
+        print(f"  {output_dir}/danger_map.png")
+        print(f"  {output_dir}/danger_map_only.png")
         print(f"{'='*60}\n")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Create Spatial Danger Map')
+    parser = argparse.ArgumentParser(description='Create Danger Map via Hypervolume Projection')
     parser.add_argument('--u_space', type=str, required=True,
-                       help='Directory with U-space data')
-    parser.add_argument('--salience', type=str, required=True,
-                       help='Directory with salience parquet files')
+                       help='Directory with U-space transformation data')
+    parser.add_argument('--che', type=str, required=True,
+                       help='Directory with CHE envelope')
     parser.add_argument('--data_root', type=str, required=True,
-                       help='Root directory of dataset (for indices.json)')
+                       help='Root directory of dataset (for landscape GeoTIFF)')
     parser.add_argument('--output', type=str, default='data/danger_map',
                        help='Output directory for danger map')
-    parser.add_argument('--resize_to', type=int, default=406,
-                       help='Resize dimension used in training')
-    parser.add_argument('--grid_resolution', type=int, default=10,
-                       help='Spatial downsampling factor')
-    parser.add_argument('--sigma', type=float, default=100,
-                       help='Distance decay parameter (pixels)')
+    parser.add_argument('--wind_speed', type=float, default=5.0,
+                       help='Typical wind speed (m/s) for projection')
+    parser.add_argument('--wind_direction', type=float, default=180.0,
+                       help='Typical wind direction (degrees) for projection')
+    parser.add_argument('--chunk_size', type=int, default=100,
+                       help='Process landscape in chunks (rows)')
     
     args = parser.parse_args()
     
     # Initialize mapper
-    mapper = DangerMapper(args.data_root, args.resize_to)
+    mapper = DangerMapper(args.data_root)
     
-    # Load all extreme pixels and top 1%
-    df_all_extreme, df_top1pct = mapper.load_extreme_and_top1pct_pixels(args.u_space, args.salience)
+    # Load PCA transformation
+    mapper.load_transformation(args.u_space)
     
-    # Map to absolute coordinates
-    df_abs_all = mapper.map_to_absolute_coords(df_all_extreme)
-    df_abs_top1pct = mapper.map_to_absolute_coords(df_top1pct)
+    # Load CHE envelope
+    mapper.load_envelope(args.che)
     
-    # Create danger grid
-    danger_grid, extent, df_abs_all, df_abs_top1pct = mapper.create_danger_grid(
-        df_abs_all,
-        df_abs_top1pct,
-        grid_resolution=args.grid_resolution,
-        sigma=args.sigma
+    # Create danger map
+    danger_grid = mapper.create_danger_map(
+        typical_wind_speed=args.wind_speed,
+        typical_wind_dir=args.wind_direction,
+        chunk_size=args.chunk_size
     )
     
     # Save results
-    mapper.save_results(danger_grid, extent, df_abs_all, df_abs_top1pct, args.output)
+    mapper.save_results(danger_grid, args.output)
     
     print(f"\n{'='*60}")
     print(f"✓ Danger Map Creation Complete")

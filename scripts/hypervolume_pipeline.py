@@ -134,11 +134,12 @@ def danger_map(args, config):
     cmd = [
         'python', 'scripts/create_danger_map.py',
         '--u_space', paths['u_space'],
-        '--salience', paths['salience'],
+        '--che', paths['che'],
         '--data_root', args.data_root or '~/data/deep_crown_dataset/organized_spreads',
         '--output', paths.get('danger_map', 'data/danger_map'),
-        '--grid_resolution', str(cfg.get('grid_resolution', 10)),
-        '--sigma', str(cfg.get('sigma', 100)),
+        '--wind_speed', str(cfg.get('wind_speed', 5.0)),
+        '--wind_direction', str(cfg.get('wind_direction', 180.0)),
+        '--chunk_size', str(cfg.get('chunk_size', 100)),
     ]
     
     run_stage(cmd, 'Danger Map')

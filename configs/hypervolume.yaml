@@ -31,8 +31,9 @@ visualization:
 
 # Stage 5: Danger Map
 danger_map:
-  grid_resolution: 1  # Full resolution (1:1 with landscape)
-  sigma: 100  # Distance decay parameter (pixels)
+  wind_speed: 5.0  # Typical wind speed (m/s) for projection
+  wind_direction: 180.0  # Typical wind direction (degrees)
+  chunk_size: 100  # Process landscape in chunks (rows)
 
 # I/O paths
 paths:
