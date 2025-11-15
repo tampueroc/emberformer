@@ -55,22 +55,37 @@ def visualize_3d(u_space_dir, che_dir, output_path, max_points=10000):
     ax.scatter(U_plot[:, 0], U_plot[:, 1], U_plot[:, 2], 
               c='blue', alpha=0.3, s=1, label='Extreme fire pixels')
     
-    # Plot 3D convex hull surface
+    # Plot 3D convex hull surface as mesh
     if envelope_mask.ndim == 3:
-        print("3D envelope detected, extracting isosurface...")
+        print("3D envelope detected, creating mesh surface...")
         
-        # Option 1: Plot hull vertices if available
+        # Option 1: Create mesh from hull vertices
         if 'hull_vertices' in che:
             hull_verts = che['hull_vertices']
-            # Subsample vertices for cleaner visualization
-            if len(hull_verts) > 5000:
-                idx = np.random.choice(len(hull_verts), 5000, replace=False)
-                hull_verts = hull_verts[idx]
             
-            print(f"  Plotting {len(hull_verts)} hull boundary vertices...")
-            ax.scatter(hull_verts[:, 0], hull_verts[:, 1], hull_verts[:, 2],
-                      c='red', alpha=0.6, s=20, marker='o', 
-                      label='CHE envelope surface', edgecolors='darkred', linewidths=0.5)
+            print(f"  Computing convex hull from {len(hull_verts)} vertices...")
+            from scipy.spatial import ConvexHull as CH
+            
+            # Compute overall convex hull for mesh
+            hull_3d = CH(hull_verts)
+            
+            # Plot as mesh
+            from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+            
+            # Create mesh from hull faces
+            faces = hull_verts[hull_3d.simplices]
+            mesh = Poly3DCollection(faces, alpha=0.25, facecolor='red', 
+                                   edgecolor='darkred', linewidths=0.5)
+            ax.add_collection3d(mesh)
+            
+            print(f"  ✓ Plotted mesh with {len(hull_3d.simplices)} triangular faces")
+            
+            # Also plot wireframe edges for clarity
+            for simplex in hull_3d.simplices[::10]:  # Every 10th face for performance
+                for i in range(3):
+                    j = (i + 1) % 3
+                    ax.plot3D(*zip(hull_verts[simplex[i]], hull_verts[simplex[j]]), 
+                             'r-', alpha=0.1, linewidth=0.3)
         
         # Option 2: Extract isosurface from occupancy grid
         else:
