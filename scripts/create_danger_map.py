@@ -155,30 +155,41 @@ class DangerMapper:
         return U
     
     def check_envelope_membership(self, U):
-        """Check if U-space point is inside CHE envelope"""
-        u1, u2 = U[0], U[1]
-        
-        # Get bounds
-        u1_min, u2_min = self.envelope_bounds[0]
-        u1_max, u2_max = self.envelope_bounds[1]
+        """Check if U-space point is inside CHE envelope (2D or 3D)"""
+        n_dims = self.envelope_bounds[0].shape[0]
+        U_check = U[:n_dims]  # Use only dimensions CHE was built with
         
         # Check if outside bounds
-        if u1 < u1_min or u1 > u1_max or u2 < u2_min or u2 > u2_max:
-            return False, float('inf')
+        for i in range(n_dims):
+            if U_check[i] < self.envelope_bounds[0][i] or U_check[i] > self.envelope_bounds[1][i]:
+                return False, float('inf')
         
         # Map to grid indices
-        i = int((u1 - u1_min) / (u1_max - u1_min) * (self.occupancy_grid.shape[1] - 1))
-        j = int((u2 - u2_min) / (u2_max - u2_min) * (self.occupancy_grid.shape[0] - 1))
-        
-        # Clamp to grid bounds
-        i = np.clip(i, 0, self.occupancy_grid.shape[1] - 1)
-        j = np.clip(j, 0, self.occupancy_grid.shape[0] - 1)
-        
-        # Check envelope mask
-        inside = bool(self.envelope_mask[j, i])
-        
-        # Get occupancy score (distance proxy)
-        occupancy = float(self.occupancy_grid[j, i])
+        if n_dims == 2:
+            u1_min, u2_min = self.envelope_bounds[0]
+            u1_max, u2_max = self.envelope_bounds[1]
+            i = int((U_check[0] - u1_min) / (u1_max - u1_min) * (self.occupancy_grid.shape[1] - 1))
+            j = int((U_check[1] - u2_min) / (u2_max - u2_min) * (self.occupancy_grid.shape[0] - 1))
+            i = np.clip(i, 0, self.occupancy_grid.shape[1] - 1)
+            j = np.clip(j, 0, self.occupancy_grid.shape[0] - 1)
+            
+            inside = bool(self.envelope_mask[j, i])
+            occupancy = float(self.occupancy_grid[j, i])
+            
+        elif n_dims == 3:
+            # 3D grid
+            indices = []
+            for dim in range(3):
+                idx = int((U_check[dim] - self.envelope_bounds[0][dim]) / 
+                         (self.envelope_bounds[1][dim] - self.envelope_bounds[0][dim]) * 
+                         (self.occupancy_grid.shape[dim] - 1))
+                idx = np.clip(idx, 0, self.occupancy_grid.shape[dim] - 1)
+                indices.append(idx)
+            
+            inside = bool(self.envelope_mask[indices[1], indices[0], indices[2]])  # Y, X, Z
+            occupancy = float(self.occupancy_grid[indices[1], indices[0], indices[2]])
+        else:
+            raise ValueError(f"Only 2D and 3D envelopes supported, got {n_dims}D")
         
         return inside, 1.0 - occupancy
     

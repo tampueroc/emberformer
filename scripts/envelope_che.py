@@ -69,13 +69,16 @@ class CHEEnvelope:
         
         return U_sampled
     
-    def bootstrap_hulls_2d(self, U, n_bootstraps, sample_fraction=0.8):
-        """Bootstrap 2D convex hulls in U1-U2 plane"""
+    def bootstrap_hulls(self, U, n_bootstraps, sample_fraction=0.8, n_dims=3):
+        """Bootstrap convex hulls in n-dimensional U-space"""
+        n_dims = min(n_dims, U.shape[1])  # Don't exceed available dimensions
+        
         print(f"\n{'='*60}")
-        print(f"Bootstrap Convex Hulls (2D)")
+        print(f"Bootstrap Convex Hulls ({n_dims}D)")
         print(f"{'='*60}")
         print(f"Bootstraps: {n_bootstraps}")
         print(f"Sample fraction: {sample_fraction}")
+        print(f"Dimensions: {n_dims} (U1-U{n_dims})")
         
         hulls = []
         n_samples = U.shape[0]
@@ -85,7 +88,7 @@ class CHEEnvelope:
         for i in tqdm(range(n_bootstraps), desc="Bootstrapping"):
             # Random sample
             idx = np.random.choice(n_samples, subsample_size, replace=True)
-            U_boot = U[idx, :2]  # Use only U1, U2
+            U_boot = U[idx, :n_dims]  # Use first n_dims components
             
             try:
                 hull = ConvexHull(U_boot, qhull_options='QJ')
@@ -99,28 +102,44 @@ class CHEEnvelope:
         
         return hulls
     
-    def build_occupancy_grid(self, U, hulls):
-        """Build 2D occupancy grid from hull ensemble"""
+    def build_occupancy_grid(self, U, hulls, n_dims=3):
+        """Build n-D occupancy grid from hull ensemble"""
+        n_dims = min(n_dims, U.shape[1])
+        
         print(f"\n{'='*60}")
-        print(f"Building Occupancy Grid")
+        print(f"Building Occupancy Grid ({n_dims}D)")
         print(f"{'='*60}")
         
         # Determine bounds with padding
-        U_2d = U[:, :2]
-        mins = U_2d.min(axis=0)
-        maxs = U_2d.max(axis=0)
+        U_subset = U[:, :n_dims]
+        mins = U_subset.min(axis=0)
+        maxs = U_subset.max(axis=0)
         padding = (maxs - mins) * 0.1
         self.bounds = (mins - padding, maxs + padding)
+        self.n_dims = n_dims
         
-        print(f"Grid resolution: {self.grid_resolution}×{self.grid_resolution}")
-        print(f"U1 range: [{self.bounds[0][0]:.3f}, {self.bounds[1][0]:.3f}]")
-        print(f"U2 range: [{self.bounds[0][1]:.3f}, {self.bounds[1][1]:.3f}]")
+        # Print bounds
+        for i in range(n_dims):
+            print(f"U{i+1} range: [{self.bounds[0][i]:.3f}, {self.bounds[1][i]:.3f}]")
         
         # Create grid
-        u1_grid = np.linspace(self.bounds[0][0], self.bounds[1][0], self.grid_resolution)
-        u2_grid = np.linspace(self.bounds[0][1], self.bounds[1][1], self.grid_resolution)
-        U1, U2 = np.meshgrid(u1_grid, u2_grid)
-        grid_points = np.column_stack([U1.ravel(), U2.ravel()])
+        if n_dims == 2:
+            print(f"Grid resolution: {self.grid_resolution}×{self.grid_resolution}")
+            u1_grid = np.linspace(self.bounds[0][0], self.bounds[1][0], self.grid_resolution)
+            u2_grid = np.linspace(self.bounds[0][1], self.bounds[1][1], self.grid_resolution)
+            U1, U2 = np.meshgrid(u1_grid, u2_grid)
+            grid_points = np.column_stack([U1.ravel(), U2.ravel()])
+            grid_shape = (self.grid_resolution, self.grid_resolution)
+        elif n_dims == 3:
+            print(f"Grid resolution: {self.grid_resolution}×{self.grid_resolution}×{self.grid_resolution}")
+            u1_grid = np.linspace(self.bounds[0][0], self.bounds[1][0], self.grid_resolution)
+            u2_grid = np.linspace(self.bounds[0][1], self.bounds[1][1], self.grid_resolution)
+            u3_grid = np.linspace(self.bounds[0][2], self.bounds[1][2], self.grid_resolution)
+            U1, U2, U3 = np.meshgrid(u1_grid, u2_grid, u3_grid)
+            grid_points = np.column_stack([U1.ravel(), U2.ravel(), U3.ravel()])
+            grid_shape = (self.grid_resolution, self.grid_resolution, self.grid_resolution)
+        else:
+            raise ValueError(f"Only 2D and 3D grids supported, got {n_dims}D")
         
         # Count occupancy (how many hulls contain each point)
         occupancy = np.zeros(len(grid_points))
@@ -135,23 +154,23 @@ class CHEEnvelope:
         
         # Normalize to fraction
         occupancy = occupancy / len(hulls)
-        self.occupancy_grid = occupancy.reshape(self.grid_resolution, self.grid_resolution)
+        self.occupancy_grid = occupancy.reshape(grid_shape)
         
         # Threshold for envelope
         self.envelope_mask = self.occupancy_grid >= self.occupancy_threshold
         
-        # Compute area (count pixels above threshold)
-        pixel_area = ((self.bounds[1][0] - self.bounds[0][0]) / self.grid_resolution) * \
-                     ((self.bounds[1][1] - self.bounds[0][1]) / self.grid_resolution)
-        envelope_area = np.sum(self.envelope_mask) * pixel_area
+        # Compute volume/area
+        voxel_size = np.prod([(self.bounds[1][i] - self.bounds[0][i]) / self.grid_resolution 
+                             for i in range(n_dims)])
+        envelope_volume = np.sum(self.envelope_mask) * voxel_size
         
         print(f"\n  ✓ Occupancy grid complete")
         print(f"    Max occupancy: {self.occupancy_grid.max():.3f}")
-        print(f"    Envelope area (τ={self.occupancy_threshold}): {envelope_area:.6e}")
+        print(f"    Envelope {'volume' if n_dims==3 else 'area'} (τ={self.occupancy_threshold}): {envelope_volume:.6e}")
         print(f"    Envelope coverage: {100*np.mean(self.envelope_mask):.2f}% of grid")
         print(f"{'='*60}\n")
         
-        return envelope_area
+        return envelope_volume
     
     def fallback_mve(self, U):
         """Fallback to Minimum Volume Ellipsoid (MVE) using EllipticEnvelope"""
@@ -193,12 +212,15 @@ class CHEEnvelope:
             'covariance': cov.tolist(),
         }
     
-    def fit(self, U):
+    def fit(self, U, n_dims=3):
         """Fit CHE to U-space data"""
+        n_dims = min(n_dims, U.shape[1])
+        
         print(f"\n{'='*60}")
-        print(f"CHE Envelope Fitting")
+        print(f"CHE Envelope Fitting ({n_dims}D)")
         print(f"{'='*60}")
         print(f"Input: {U.shape[0]:,} points × {U.shape[1]} dimensions")
+        print(f"Using: {n_dims} dimensions for CHE")
         
         # Guard: subsample if too many points
         if U.shape[0] > self.max_hull_points:
@@ -209,20 +231,22 @@ class CHEEnvelope:
         # Try CHE
         try:
             # Bootstrap hulls
-            hulls = self.bootstrap_hulls_2d(U_sub, self.n_bootstraps)
+            hulls = self.bootstrap_hulls(U_sub, self.n_bootstraps, n_dims=n_dims)
             
             if len(hulls) < 10:
                 raise ValueError("Too few successful hulls, falling back to MVE")
             
             # Build occupancy grid
-            area = self.build_occupancy_grid(U, hulls)
+            volume = self.build_occupancy_grid(U, hulls, n_dims=n_dims)
             
             return {
                 'method': 'CHE',
-                'area': float(area),
+                'volume': float(volume),
+                'area': float(volume),  # For backwards compat
                 'n_hulls': len(hulls),
                 'occupancy_threshold': self.occupancy_threshold,
                 'grid_resolution': self.grid_resolution,
+                'n_dims': n_dims,
             }
         
         except Exception as e:
@@ -265,6 +289,8 @@ def main():
                        help='Maximum points for hull computation (subsample if exceeded)')
     parser.add_argument('--grid_resolution', type=int, default=100,
                        help='Resolution of occupancy grid')
+    parser.add_argument('--n_dims', type=int, default=3,
+                       help='Number of dimensions to use (2=2D, 3=3D hull)')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed for reproducibility')
     
@@ -294,7 +320,7 @@ def main():
     )
     
     start_time = time.time()
-    stats = che.fit(U)
+    stats = che.fit(U, n_dims=args.n_dims)
     elapsed = time.time() - start_time
     
     stats['elapsed_seconds'] = elapsed
