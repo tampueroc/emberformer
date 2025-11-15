@@ -335,10 +335,13 @@ class DangerMapper:
               f"X=[{df_abs_top1pct['x_abs'].min():.0f}, {df_abs_top1pct['x_abs'].max():.0f}]")
         print(f"  Landscape extent: Y=[0, {self.landscape_shape[0]}], X=[0, {self.landscape_shape[1]}]")
         
+        # Invert y-coordinates to match image origin='upper' (0 at top)
+        y_inverted = self.landscape_shape[0] - df_abs_top1pct['y_abs']
+        
         # Highlight top 1% danger sources ONLY (don't plot all 1M pixels)
         ax.scatter(
             df_abs_top1pct['x_abs'],
-            df_abs_top1pct['y_abs'],
+            y_inverted,
             c='darkred',
             s=5,
             alpha=0.9,
@@ -352,6 +355,9 @@ class DangerMapper:
         ax.set_ylabel('Y (landscape pixels)', fontsize=13, fontweight='bold')
         ax.set_title('Fire Danger Map: Full Landscape\nDanger = Proximity to Extreme Fire Environmental Hypervolume', 
                     fontsize=15, fontweight='bold', pad=20)
+        
+        # Set y-axis limits explicitly with 0 at top
+        ax.set_ylim(self.landscape_shape[0], 0)
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
         cbar.set_label('Danger Level\n(Yellow=Moderate, Red=Extreme)', fontsize=11, fontweight='bold')
@@ -379,6 +385,9 @@ class DangerMapper:
         ax.set_ylabel('Y (landscape pixels)', fontsize=13, fontweight='bold')
         ax.set_title('Elevation: Full Landscape', 
                     fontsize=15, fontweight='bold', pad=20)
+        
+        # Set y-axis limits explicitly with 0 at top
+        ax.set_ylim(self.landscape_shape[0], 0)
         
         cbar = plt.colorbar(im_elev, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
         cbar.set_label('Elevation (m)', fontsize=11, fontweight='bold')
