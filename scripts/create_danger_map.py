@@ -337,6 +337,31 @@ class DangerMapper:
         plt.savefig(output_dir / 'danger_map.png', dpi=300, bbox_inches='tight')
         plt.close()
         
+        # Also create fuel-only map (no danger overlay)
+        print(f"Creating fuel-only map...")
+        
+        fig, ax = plt.subplots(figsize=(18, 14))
+        
+        im_fuel = ax.imshow(
+            fuel_load, 
+            cmap='YlGn',
+            extent=extent, 
+            origin='upper',
+            interpolation='bilinear'
+        )
+        
+        ax.set_xlabel('X (landscape pixels)', fontsize=13, fontweight='bold')
+        ax.set_ylabel('Y (landscape pixels)', fontsize=13, fontweight='bold')
+        ax.set_title('Fuel Load: Full Landscape', 
+                    fontsize=15, fontweight='bold', pad=20)
+        
+        cbar = plt.colorbar(im_fuel, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
+        cbar.set_label('Fuel Load', fontsize=11, fontweight='bold')
+        
+        plt.tight_layout()
+        plt.savefig(output_dir / 'fuel_load_map.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        
         print(f"{'='*60}")
         print(f"✓ Saved Results")
         print(f"{'='*60}")
@@ -344,6 +369,7 @@ class DangerMapper:
         print(f"  {output_dir}/extreme_pixel_locations_all.csv ({len(df_abs_all):,} pixels)")
         print(f"  {output_dir}/danger_sources_top1pct.csv ({len(df_abs_top1pct):,} pixels)")
         print(f"  {output_dir}/danger_map.png")
+        print(f"  {output_dir}/fuel_load_map.png")
         print(f"{'='*60}\n")
 
 
