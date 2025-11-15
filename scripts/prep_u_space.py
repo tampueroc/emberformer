@@ -126,57 +126,16 @@ class USpacePrep:
         return X, metadata
     
     def fit_transform(self, X):
-        """Smart normalization + PCA: handle binary/sparse features separately"""
+        """Simple Z-score normalization + PCA (matching 13a08e2 methodology)"""
         print(f"\n{'='*60}")
-        print(f"PCA Transformation with Smart Normalization")
+        print(f"PCA Transformation")
         print(f"{'='*60}")
         print(f"Input shape: {X.shape}")
-        
-        # Fit scaler to get statistics
+
+        # Simple Z-score normalization for ALL features
         self.scaler = StandardScaler()
-        self.scaler.fit(X)
-        
-        # Identify sparse/binary features (low variance or mostly nodata)
-        feature_stds = self.scaler.scale_
-        feature_means = self.scaler.mean_
-        
-        # Features with std < threshold are sparse (mostly nodata or constant)
-        sparse_mask = feature_stds < self.min_feature_std
-        
-        # Also check for binary-like: mean near -1 or 1 AND low std
-        binary_like_mask = (np.abs(feature_means) > 0.95) & (feature_stds < 0.2)
-        
-        # Combine: features that are either sparse or binary-like
-        special_features_mask = sparse_mask | binary_like_mask
-        continuous_mask = ~special_features_mask
-        
-        print(f"\n  Feature categorization:")
-        print(f"    Continuous features: {continuous_mask.sum()}")
-        print(f"    Sparse/binary features: {special_features_mask.sum()}")
-        
-        # Print special features that will be handled differently
-        if special_features_mask.any():
-            print(f"\n  Special handling (no z-score):")
-            for name, mean, std in zip(np.array(self.feature_names)[special_features_mask],
-                                      feature_means[special_features_mask],
-                                      feature_stds[special_features_mask]):
-                print(f"    • {name}: mean={mean:.3f}, std={std:.4f}")
-        
-        # Apply normalization
-        X_scaled = np.zeros_like(X, dtype=np.float32)
-        
-        # Z-score for continuous features
-        if continuous_mask.any():
-            X_scaled[:, continuous_mask] = (X[:, continuous_mask] - feature_means[continuous_mask]) / \
-                                           (feature_stds[continuous_mask] + 1e-8)
-            print(f"\n  ✓ Z-score normalized {continuous_mask.sum()} continuous features")
-        
-        # Keep sparse/binary features as-is (already normalized to [-1, 1])
-        if special_features_mask.any():
-            X_scaled[:, special_features_mask] = X[:, special_features_mask]
-            print(f"  ✓ Preserved {special_features_mask.sum()} sparse/binary features (no z-score)")
-        
-        print(f"\n  All features retained: {X_scaled.shape[1]}")
+        X_scaled = self.scaler.fit_transform(X)
+        print(f"  ✓ Z-score normalized (mean=0, std=1)")
         
         # PCA
         n_components = min(self.max_components, X_scaled.shape[1])
