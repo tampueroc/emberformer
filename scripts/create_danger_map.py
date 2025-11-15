@@ -153,12 +153,7 @@ class DangerMapper:
                 features.append(pixel_features['paleo'])
             elif feat_name == 'urbana':
                 features.append(pixel_features['urbana'])
-            elif feat_name == 'wind_speed':
-                features.append(pixel_features['wind_speed'])
-            elif feat_name == 'wind_direction_cos':
-                features.append(np.cos(pixel_features['wind_direction'] * np.pi / 180))
-            elif feat_name == 'wind_direction_sin':
-                features.append(np.sin(pixel_features['wind_direction'] * np.pi / 180))
+            # Wind features removed - landscape determinants only
         
         return np.array(features, dtype=np.float32)
     
@@ -268,28 +263,21 @@ class DangerMapper:
         else:
             return inside
     
-    def create_danger_map(self, typical_wind_speed=5.0, typical_wind_dir=180.0, chunk_size=1000):
+    def create_danger_map(self, chunk_size=1000):
         """
         Create danger map over full landscape
         
         Args:
-            typical_wind_speed: Typical summer wind speed (m/s, RAW) to use for all pixels
-            typical_wind_dir: Typical wind direction (degrees) for circular encoding
             chunk_size: Process landscape in chunks (rows at a time)
         
         Returns:
             danger_grid: [H, W] array with danger scores
         """
-        # Normalize wind speed using training ranges [0, 51] m/s → [0, 1]
-        # (from WeatherNormalize.fit_transform)
-        wind_speed_normalized = (typical_wind_speed - 0.0) / (51.0 - 0.0)
-        
         print(f"\n{'='*60}")
         print(f"Creating Danger Map via U-Space Projection")
         print(f"{'='*60}")
         print(f"Landscape: {self.landscape_shape[0]} × {self.landscape_shape[1]} pixels")
-        print(f"Using typical wind: {typical_wind_speed} m/s (normalized: {wind_speed_normalized:.4f}) @ {typical_wind_dir}°")
-        print(f"Processing in chunks of {chunk_size} rows...")
+        print(f"NOTE: Wind features excluded (landscape determinants only)")
         
         H, W = self.landscape_shape
         danger_grid = np.full((H, W), np.nan, dtype=np.float32)
@@ -320,7 +308,7 @@ class DangerMapper:
         for idx in tqdm(range(len(y_coords)), desc="Computing danger scores"):
             y, x = y_coords[idx], x_coords[idx]
             
-            # Extract environmental features for this pixel
+            # Extract environmental features for this pixel (LANDSCAPE ONLY, no wind)
             pixel_features = {
                 'forest': self.landscape[band_idx['forest'], y, x],
                 'arqueo': self.landscape[band_idx['arqueo'], y, x],
@@ -330,8 +318,6 @@ class DangerMapper:
                 'flora': self.landscape[band_idx['flora'], y, x],
                 'paleo': self.landscape[band_idx['paleo'], y, x],
                 'urbana': self.landscape[band_idx['urbana'], y, x],
-                'wind_speed': wind_speed_normalized,
-                'wind_direction': typical_wind_dir,
             }
             
             # Engineer features
@@ -372,8 +358,6 @@ class DangerMapper:
                     'flora': float(pixel_features['flora']),
                     'paleo': float(pixel_features['paleo']),
                     'urbana': float(pixel_features['urbana']),
-                    'wind_speed': float(wind_speed_normalized),
-                    'wind_direction': float(typical_wind_dir),
                     'distance_to_envelope': float(distance),
                     'danger_score': float(danger_score),
                 }
@@ -570,10 +554,6 @@ def main():
                        help='Root directory of dataset (for landscape GeoTIFF)')
     parser.add_argument('--output', type=str, default='data/danger_map',
                        help='Output directory for danger map')
-    parser.add_argument('--wind_speed', type=float, default=5.0,
-                       help='Typical wind speed (m/s) for projection')
-    parser.add_argument('--wind_direction', type=float, default=180.0,
-                       help='Typical wind direction (degrees) for projection')
     parser.add_argument('--chunk_size', type=int, default=100,
                        help='Process landscape in chunks (rows)')
     
@@ -589,11 +569,7 @@ def main():
     mapper.load_envelope(args.che)
     
     # Create danger map
-    danger_grid = mapper.create_danger_map(
-        typical_wind_speed=args.wind_speed,
-        typical_wind_dir=args.wind_direction,
-        chunk_size=args.chunk_size
-    )
+    danger_grid = mapper.create_danger_map(chunk_size=args.chunk_size)
     
     # Save results
     mapper.save_results(danger_grid, args.output)

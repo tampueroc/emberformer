@@ -102,16 +102,11 @@ class USpacePrep:
                 feature_list.append(feat)
                 print(f"  ✓ {feat}: {features[feat].shape[0]:,} values")
         
-        # Wind: polar coordinates with circular encoding
+        # SKIP WIND: It's constant across extreme fires (~0.6° at 9.7 m/s)
+        # Wind is temporal, not a landscape determinant
+        # We want to identify landscape characteristics, not weather patterns
         if 'wind_speed' in data and 'wind_direction' in data:
-            wind_speed = np.array(data['wind_speed'], dtype=np.float32)
-            wind_dir_rad = np.array(data['wind_direction'], dtype=np.float32) * np.pi / 180
-            
-            features['wind_speed'] = wind_speed
-            features['wind_direction_cos'] = np.cos(wind_dir_rad)
-            features['wind_direction_sin'] = np.sin(wind_dir_rad)
-            feature_list.extend(['wind_speed', 'wind_direction_cos', 'wind_direction_sin'])
-            print(f"  ✓ wind_speed, wind_direction → wind_speed, wind_direction_cos, wind_direction_sin")
+            print(f"  ⊗ Skipping wind features (temporal, not landscape-based)")
         
         print(f"\nTotal features: {len(feature_list)}")
         print(f"{'='*60}\n")
