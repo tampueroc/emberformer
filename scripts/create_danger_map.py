@@ -26,6 +26,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import rasterio
 from matplotlib.colors import LinearSegmentedColormap
+import pandas as pd
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -222,6 +223,9 @@ class DangerMapper:
         inside_count = 0
         sample_features = []
         
+        # Store raw features for pixels inside danger zone
+        danger_pixel_data = []
+        
         # Process in chunks (row-wise)
         for start_row in tqdm(range(0, H, chunk_size), desc="Processing landscape"):
             end_row = min(start_row + chunk_size, H)
@@ -266,6 +270,23 @@ class DangerMapper:
                         inside_count += 1
                         # Inside envelope = high danger (0.5-0.7 based on occupancy)
                         danger_grid[y, x] = 0.5 + 0.2 * distance
+                        
+                        # Capture raw features for danger zone pixels
+                        danger_record = {
+                            'y': y,
+                            'x': x,
+                            'elevation': pixel_features['elevation'],
+                            'slope': pixel_features['slope'],
+                            'aspect': pixel_features['aspect'],
+                            'fuel_load': pixel_features['fuel_load'],
+                            'vegetation': pixel_features['vegetation'],
+                            'canopy_height': pixel_features['canopy_height'],
+                            'canopy_density': pixel_features['canopy_density'],
+                            'wind_speed': pixel_features['wind_speed'],
+                            'wind_direction': pixel_features['wind_direction'],
+                            'danger_score': 0.5 + 0.2 * distance,
+                        }
+                        danger_pixel_data.append(danger_record)
                     else:
                         # Outside envelope = lower danger (0.7-1.0 based on distance)
                         danger_grid[y, x] = 0.7 + 0.3 * min(distance, 1.0)
@@ -291,9 +312,34 @@ class DangerMapper:
         print(f"  Danger range: [{valid_danger.min():.3f}, {valid_danger.max():.3f}]")
         print(f"  Mean danger: {valid_danger.mean():.3f}")
         print(f"  High danger pixels (< 0.7): {(valid_danger < 0.7).sum():,}")
+        print(f"  Danger zone pixels captured: {len(danger_pixel_data):,}")
         print(f"{'='*60}\n")
         
+        # Store danger pixel data for saving
+        self.danger_pixel_data = danger_pixel_data
+        
         return danger_grid
+    
+    def save_danger_features(self, output_dir):
+        """Save raw environmental features for danger zone pixels"""
+        output_dir = Path(output_dir)
+        
+        if not hasattr(self, 'danger_pixel_data') or len(self.danger_pixel_data) == 0:
+            print("  No danger zone pixels to save")
+            return
+        
+        print(f"Saving danger zone features...")
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(self.danger_pixel_data)
+        
+        # Save to parquet
+        parquet_path = output_dir / 'danger_pixel_features.parquet'
+        df.to_parquet(parquet_path, index=False, compression='snappy')
+        
+        print(f"  ✓ Saved {len(df):,} danger zone pixels")
+        print(f"  Columns: {list(df.columns)}")
+        print(f"  File: {parquet_path}")
     
     def save_results(self, danger_grid, output_dir):
         """Save danger map and visualizations"""
@@ -408,6 +454,9 @@ class DangerMapper:
         plt.savefig(output_dir / 'danger_map_only.png', dpi=300, bbox_inches='tight')
         plt.close()
         
+        # Save danger zone features
+        self.save_danger_features(output_dir)
+        
         print(f"\n{'='*60}")
         print(f"✓ Saved Results")
         print(f"{'='*60}")
@@ -415,6 +464,7 @@ class DangerMapper:
         print(f"  {output_dir}/elevation_map.png")
         print(f"  {output_dir}/danger_map.png")
         print(f"  {output_dir}/danger_map_only.png")
+        print(f"  {output_dir}/danger_pixel_features.parquet")
         print(f"{'='*60}\n")
 
 
