@@ -145,9 +145,27 @@ class DangerMapper:
         return np.array(features, dtype=np.float32)
     
     def project_to_uspace(self, X):
-        """Project features to U-space using saved PCA"""
-        # Z-score normalize
-        X_scaled = (X - self.scaler_mean) / (self.scaler_std + 1e-8)
+        """Project features to U-space using saved PCA with smart normalization"""
+        X_scaled = np.zeros_like(X, dtype=np.float32)
+        
+        # Apply same normalization logic as training
+        feature_stds = self.scaler_std
+        feature_means = self.scaler_mean
+        
+        # Identify special features (same logic as prep_u_space)
+        sparse_mask = feature_stds < 0.10
+        binary_like_mask = (np.abs(feature_means) > 0.95) & (feature_stds < 0.2)
+        special_features_mask = sparse_mask | binary_like_mask
+        continuous_mask = ~special_features_mask
+        
+        # Z-score for continuous features
+        if continuous_mask.any():
+            X_scaled[continuous_mask] = (X[continuous_mask] - feature_means[continuous_mask]) / \
+                                        (feature_stds[continuous_mask] + 1e-8)
+        
+        # Keep sparse/binary as-is
+        if special_features_mask.any():
+            X_scaled[special_features_mask] = X[special_features_mask]
         
         # PCA projection
         U = X_scaled @ self.pca_components.T

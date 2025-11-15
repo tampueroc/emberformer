@@ -131,43 +131,57 @@ class USpacePrep:
         return X, metadata
     
     def fit_transform(self, X):
-        """Z-score + PCA to U-space with low-variance feature filtering"""
+        """Smart normalization + PCA: handle binary/sparse features separately"""
         print(f"\n{'='*60}")
-        print(f"PCA Transformation")
+        print(f"PCA Transformation with Smart Normalization")
         print(f"{'='*60}")
         print(f"Input shape: {X.shape}")
         
-        # Z-score normalization
+        # Fit scaler to get statistics
         self.scaler = StandardScaler()
-        X_scaled = self.scaler.fit_transform(X)
-        print(f"  ✓ Z-score normalized (mean=0, std=1)")
+        self.scaler.fit(X)
         
-        # Filter low-variance features
+        # Identify sparse/binary features (low variance or mostly nodata)
         feature_stds = self.scaler.scale_
-        high_var_mask = feature_stds >= self.min_feature_std
-        n_dropped = (~high_var_mask).sum()
+        feature_means = self.scaler.mean_
         
-        if n_dropped > 0:
-            print(f"\n  Filtering low-variance features (std < {self.min_feature_std}):")
-            for i, (name, std, keep) in enumerate(zip(self.feature_names, feature_stds, high_var_mask)):
-                if not keep:
-                    print(f"    ✗ {name}: std={std:.4f} (DROPPED)")
-            
-            # Keep only high-variance features
-            X_scaled = X_scaled[:, high_var_mask]
-            self.feature_names = [name for name, keep in zip(self.feature_names, high_var_mask) if keep]
-            kept_stds = feature_stds[high_var_mask]
-            kept_means = self.scaler.mean_[high_var_mask]
-            
-            print(f"\n  Kept features ({len(self.feature_names)}):")
-            for name, mean, std in zip(self.feature_names, kept_means, kept_stds):
-                print(f"    ✓ {name}: mean={mean:.3f}, std={std:.3f}")
-            
-            # Update scaler to reflect kept features only
-            self.scaler.mean_ = kept_means
-            self.scaler.scale_ = kept_stds
+        # Features with std < threshold are sparse (mostly nodata or constant)
+        sparse_mask = feature_stds < self.min_feature_std
         
-        print(f"\n  Final feature count: {X_scaled.shape[1]}")
+        # Also check for binary-like: mean near -1 or 1 AND low std
+        binary_like_mask = (np.abs(feature_means) > 0.95) & (feature_stds < 0.2)
+        
+        # Combine: features that are either sparse or binary-like
+        special_features_mask = sparse_mask | binary_like_mask
+        continuous_mask = ~special_features_mask
+        
+        print(f"\n  Feature categorization:")
+        print(f"    Continuous features: {continuous_mask.sum()}")
+        print(f"    Sparse/binary features: {special_features_mask.sum()}")
+        
+        # Print special features that will be handled differently
+        if special_features_mask.any():
+            print(f"\n  Special handling (no z-score):")
+            for name, mean, std in zip(np.array(self.feature_names)[special_features_mask],
+                                      feature_means[special_features_mask],
+                                      feature_stds[special_features_mask]):
+                print(f"    • {name}: mean={mean:.3f}, std={std:.4f}")
+        
+        # Apply normalization
+        X_scaled = np.zeros_like(X, dtype=np.float32)
+        
+        # Z-score for continuous features
+        if continuous_mask.any():
+            X_scaled[:, continuous_mask] = (X[:, continuous_mask] - feature_means[continuous_mask]) / \
+                                           (feature_stds[continuous_mask] + 1e-8)
+            print(f"\n  ✓ Z-score normalized {continuous_mask.sum()} continuous features")
+        
+        # Keep sparse/binary features as-is (already normalized to [-1, 1])
+        if special_features_mask.any():
+            X_scaled[:, special_features_mask] = X[:, special_features_mask]
+            print(f"  ✓ Preserved {special_features_mask.sum()} sparse/binary features (no z-score)")
+        
+        print(f"\n  All features retained: {X_scaled.shape[1]}")
         
         # PCA
         n_components = min(self.max_components, X_scaled.shape[1])
