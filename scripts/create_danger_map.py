@@ -303,8 +303,11 @@ class DangerMapper:
         # Store raw features for pixels inside danger zone
         danger_pixel_data = []
         
-        # Process in chunks (row-wise)
-        for start_row in tqdm(range(0, H, chunk_size), desc="Processing landscape"):
+        # First pass: compute all distances
+        distance_grid = np.full((H, W), np.nan, dtype=np.float32)
+        
+        print("  Pass 1: Computing distances to envelope...")
+        for start_row in tqdm(range(0, H, chunk_size), desc="Computing distances"):
             end_row = min(start_row + chunk_size, H)
             
             for y in range(start_row, end_row):
@@ -323,13 +326,9 @@ class DangerMapper:
                         'flora': self.landscape[band_idx['flora'], y, x],
                         'paleo': self.landscape[band_idx['paleo'], y, x],
                         'urbana': self.landscape[band_idx['urbana'], y, x],
-                        'wind_speed': wind_speed_normalized,  # Use normalized value
-                        'wind_direction': typical_wind_dir,    # Keep raw for cos/sin
+                        'wind_speed': wind_speed_normalized,
+                        'wind_direction': typical_wind_dir,
                     }
-                    
-                    # Debug: sample first 10 pixels
-                    if len(sample_features) < 10:
-                        sample_features.append(pixel_features.copy())
                     
                     # Engineer features
                     X = self.engineer_pixel_features(pixel_features)
@@ -343,36 +342,72 @@ class DangerMapper:
                     
                     # Compute distance to envelope
                     distance = self.compute_distance_to_envelope(U)
+                    distance_grid[y, x] = distance
+        
+        # Normalize distances to [0, 1] based on actual range
+        valid_distances = distance_grid[~np.isnan(distance_grid)]
+        min_dist = valid_distances.min()
+        max_dist = valid_distances.max()
+        
+        print(f"\n  Distance range: [{min_dist:.4f}, {max_dist:.4f}]")
+        print(f"  Pass 2: Normalizing to danger scores...")
+        
+        # Second pass: normalize and collect danger pixels
+        for y in range(H):
+            for x in range(W):
+                if np.isnan(distance_grid[y, x]):
+                    continue
+                
+                distance = distance_grid[y, x]
+                
+                # Normalize to [0, 1]
+                if max_dist > min_dist:
+                    danger_score = (distance - min_dist) / (max_dist - min_dist)
+                else:
+                    danger_score = 0.0
+                
+                danger_grid[y, x] = danger_score
+                
+                # Track inside envelope pixels (distance == 0)
+                if distance == 0.0:
+                    inside_count += 1
                     
-                    # Map distance to danger score
-                    # 0.0 distance (inside) = 0.0 danger score (most dangerous)
-                    # Increasing distance = increasing score (less dangerous)
-                    # Scale: 0 → 0.0, 1 → 0.5, 2+ → 1.0
-                    danger_score = np.clip(distance / 2.0, 0.0, 1.0)
-                    danger_grid[y, x] = danger_score
+                    # Get pixel features again
+                    pixel_features = {
+                        'forest': self.landscape[band_idx['forest'], y, x],
+                        'arqueo': self.landscape[band_idx['arqueo'], y, x],
+                        'cbd': self.landscape[band_idx['cbd'], y, x],
+                        'cbh': self.landscape[band_idx['cbh'], y, x],
+                        'elevation': self.landscape[band_idx['elevation'], y, x],
+                        'flora': self.landscape[band_idx['flora'], y, x],
+                        'paleo': self.landscape[band_idx['paleo'], y, x],
+                        'urbana': self.landscape[band_idx['urbana'], y, x],
+                        'wind_speed': wind_speed_normalized,
+                        'wind_direction': typical_wind_dir,
+                    }
                     
-                    # Track inside envelope pixels
-                    if distance == 0.0:
-                        inside_count += 1
-                        
-                        # Capture raw features for danger zone pixels (inside envelope)
-                        danger_record = {
-                            'y': y,
-                            'x': x,
-                            'forest': pixel_features['forest'],
-                            'arqueo': pixel_features['arqueo'],
-                            'cbd': pixel_features['cbd'],
-                            'cbh': pixel_features['cbh'],
-                            'elevation': pixel_features['elevation'],
-                            'flora': pixel_features['flora'],
-                            'paleo': pixel_features['paleo'],
-                            'urbana': pixel_features['urbana'],
-                            'wind_speed': pixel_features['wind_speed'],
-                            'wind_direction': pixel_features['wind_direction'],
-                            'distance_to_envelope': distance,
-                            'danger_score': danger_score,
-                        }
-                        danger_pixel_data.append(danger_record)
+                    # Capture for analysis
+                    danger_record = {
+                        'y': y,
+                        'x': x,
+                        'forest': pixel_features['forest'],
+                        'arqueo': pixel_features['arqueo'],
+                        'cbd': pixel_features['cbd'],
+                        'cbh': pixel_features['cbh'],
+                        'elevation': pixel_features['elevation'],
+                        'flora': pixel_features['flora'],
+                        'paleo': pixel_features['paleo'],
+                        'urbana': pixel_features['urbana'],
+                        'wind_speed': pixel_features['wind_speed'],
+                        'wind_direction': pixel_features['wind_direction'],
+                        'distance_to_envelope': distance,
+                        'danger_score': danger_score,
+                    }
+                    danger_pixel_data.append(danger_record)
+                
+                # Debug: sample first 10 pixels
+                if len(sample_features) < 10:
+                    sample_features.append(pixel_features)
         
         # Debug output
         if len(u_values) > 0:
@@ -482,31 +517,35 @@ class DangerMapper:
         )
         
         # Overlay danger map
-        # Custom colormap: black-orange (0.5) → white (1.0)
-        colors = ['#000000', '#FF4500', '#FFA500', '#FFFF00', '#FFFFFF']
-        cmap_danger = LinearSegmentedColormap.from_list('danger', colors, N=100)
+        # Custom colormap: black (0.0 = max danger) → red → yellow → white (1.0 = safe)
+        colors = ['#000000', '#8B0000', '#FF4500', '#FFA500', '#FFFF00', '#FFFFFF']
+        cmap_danger = LinearSegmentedColormap.from_list('danger', colors, N=256)
         
         danger_masked = np.ma.masked_invalid(danger_grid)
+        
+        # Use actual data range
+        vmin = 0.0
+        vmax = max(danger_masked.max(), 0.5)  # At least 0.5 for scale
         
         im = ax.imshow(
             danger_masked,
             extent=extent,
             origin='upper',
             cmap=cmap_danger,
-            vmin=0.5,
-            vmax=1.0,
+            vmin=vmin,
+            vmax=vmax,
             alpha=0.8,
             interpolation='bilinear'
         )
         
         ax.set_xlabel('X (landscape pixels)', fontsize=13, fontweight='bold')
         ax.set_ylabel('Y (landscape pixels)', fontsize=13, fontweight='bold')
-        ax.set_title('Fire Danger Map: Environmental Hypervolume Projection\n'
-                    'Areas with conditions matching extreme fire events',
+        ax.set_title('Fire Danger Map: Distance to Extreme Fire Hypervolume\n'
+                    'Darker = Closer to extreme fire conditions',
                     fontsize=15, fontweight='bold', pad=20)
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label('Danger Score\n(0.5=Extreme, 1.0=Safe)', fontsize=11, fontweight='bold')
+        cbar.set_label(f'Danger Score\n(0.0=Extreme, {vmax:.1f}=Safer)', fontsize=11, fontweight='bold')
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map.png', dpi=300, bbox_inches='tight')
@@ -520,18 +559,18 @@ class DangerMapper:
             extent=extent,
             origin='upper',
             cmap=cmap_danger,
-            vmin=0.5,
-            vmax=1.0,
+            vmin=vmin,
+            vmax=vmax,
             interpolation='bilinear'
         )
         
         ax.set_xlabel('X (landscape pixels)', fontsize=13, fontweight='bold')
         ax.set_ylabel('Y (landscape pixels)', fontsize=13, fontweight='bold')
-        ax.set_title('Fire Danger Map (Danger Only)',
+        ax.set_title('Fire Danger Map (Distance to Extreme Fire Envelope)',
                     fontsize=15, fontweight='bold', pad=20)
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label('Danger Score\n(0.5=Extreme, 1.0=Safe)', fontsize=11, fontweight='bold')
+        cbar.set_label(f'Danger Score\n(0.0=Extreme, {vmax:.1f}=Safer)', fontsize=11, fontweight='bold')
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map_only.png', dpi=300, bbox_inches='tight')
