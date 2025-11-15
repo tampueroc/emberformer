@@ -57,14 +57,25 @@ class DangerMapper:
             self.landscape_transform = src.transform
             self.landscape_crs = src.crs
         
-        print(f"  Shape: {self.landscape_shape[0]} × {self.landscape_shape[1]} pixels")
+        print(f"  Normalized shape: {self.landscape_shape[0]} × {self.landscape_shape[1]} pixels")
+        print(f"  Raw shape: {self.landscape_raw.shape[1]} × {self.landscape_raw.shape[2]} pixels")
+        print(f"  Shapes match: {self.landscape.shape == self.landscape_raw.shape}")
         print(f"  Bands: {self.landscape.shape[0]}")
         print(f"  Normalized: min={self.landscape.min():.2f}, max={self.landscape.max():.2f}")
         
-        # Create valid data mask
-        self.valid_mask = self.landscape[0] != self.nodata
-        print(f"  Valid pixels: {self.valid_mask.sum():,} / {self.valid_mask.size:,} "
+        # Create valid data mask from RAW landscape (source of truth)
+        # This ensures we only process pixels that exist in the elevation map
+        self.valid_mask = self.landscape_raw[0] != -9999
+        
+        print(f"  Valid pixels (from raw elevation): {self.valid_mask.sum():,} / {self.valid_mask.size:,} "
               f"({100*self.valid_mask.mean():.1f}%)")
+        
+        # Verify normalized landscape has same valid region
+        normalized_valid = self.landscape[0] != self.nodata
+        if not np.array_equal(self.valid_mask, normalized_valid):
+            print(f"  WARNING: Normalized and raw valid masks differ!")
+            print(f"    Normalized has {normalized_valid.sum():,} valid pixels")
+            print(f"    Using raw mask as source of truth")
     
     def load_transformation(self, u_space_dir):
         """Load PCA transformation metadata from prep_u_space stage"""
