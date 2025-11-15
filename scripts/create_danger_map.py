@@ -39,10 +39,10 @@ class DangerMapper:
         
         print(f"Loaded indices for {len(self.indices)} fire sequences")
     
-    def load_top_1pct_pixels(self, u_space_dir, salience_dir):
-        """Load top 1% pixels by Grad-CAM importance"""
+    def load_extreme_and_top1pct_pixels(self, u_space_dir, salience_dir):
+        """Load all extreme fire pixels and identify top 1% for danger sources"""
         print(f"\n{'='*60}")
-        print(f"Loading Top 1% Pixels")
+        print(f"Loading Extreme Fire Pixels")
         print(f"{'='*60}")
         
         # Load U-space data
@@ -50,14 +50,14 @@ class DangerMapper:
         data = np.load(u_space_dir / 'extreme.npz')
         gradcam = data['gradcam']
         
-        # Filter for top 1%
+        # Filter for top 1% as danger sources
         threshold_99 = np.percentile(gradcam, 99)
         top_1pct_mask = gradcam > threshold_99
         
-        print(f"Top 1% threshold: {threshold_99:.4f}")
-        print(f"Top 1% pixels: {top_1pct_mask.sum():,} / {len(gradcam):,}")
+        print(f"Top 1% Grad-CAM threshold: {threshold_99:.4f}")
+        print(f"Top 1% pixels (danger sources): {top_1pct_mask.sum():,} / {len(gradcam):,}")
         
-        # Load salience parquet files and filter for extreme fires first
+        # Load salience parquet files - get ALL extreme fire pixels
         salience_dir = Path(salience_dir)
         
         # Get extreme fire threshold from quantiles
@@ -65,12 +65,13 @@ class DangerMapper:
             quantiles = json.load(f)
         extreme_threshold = quantiles['p99']
         
-        print(f"\nLoading extreme fire salience data (fire_intensity > {extreme_threshold:.2f})...")
+        print(f"\nLoading ALL extreme fire pixels (fire_intensity > {extreme_threshold:.2f})...")
         
         parquet_files = sorted(salience_dir.glob('part-*.parquet'))
         
         # Load all extreme fire pixels
         all_rows = []
+        top_1pct_rows = []
         row_offset = 0
         
         for pfile in tqdm(parquet_files, desc="Loading parquet"):
@@ -83,25 +84,30 @@ class DangerMapper:
             if len(df) == 0:
                 continue
             
-            # Track which rows from this file are in top 1% Grad-CAM
+            # Add all extreme pixels
+            all_rows.append(df)
+            
+            # Track which rows are in top 1% Grad-CAM (danger sources)
             file_size = len(df)
             file_mask = top_1pct_mask[row_offset:row_offset + file_size]
             
             if file_mask.sum() > 0:
                 df_top = df[file_mask].copy()
-                all_rows.append(df_top)
+                top_1pct_rows.append(df_top)
             
             row_offset += file_size
         
         if len(all_rows) == 0:
-            raise ValueError("No top 1% pixels found!")
+            raise ValueError("No extreme fire pixels found!")
         
-        df_top_1pct = pd.concat(all_rows, ignore_index=True)
+        df_all_extreme = pd.concat(all_rows, ignore_index=True)
+        df_top_1pct = pd.concat(top_1pct_rows, ignore_index=True) if top_1pct_rows else pd.DataFrame()
         
-        print(f"\n✓ Loaded {len(df_top_1pct):,} top 1% pixels")
+        print(f"\n✓ Loaded {len(df_all_extreme):,} total extreme fire pixels")
+        print(f"✓ Identified {len(df_top_1pct):,} top 1% danger sources")
         print(f"{'='*60}\n")
         
-        return df_top_1pct
+        return df_all_extreme, df_top_1pct
     
     def map_to_absolute_coords(self, df):
         """
@@ -166,25 +172,26 @@ class DangerMapper:
         
         return df_abs
     
-    def create_danger_grid(self, df_abs, grid_resolution=10, sigma=100):
+    def create_danger_grid(self, df_abs_all, df_abs_top1pct, grid_resolution=10, sigma=100):
         """
         Create danger map using KDTree for proximity calculation
         
         Args:
-            df_abs: DataFrame with absolute coordinates
+            df_abs_all: DataFrame with ALL extreme pixel absolute coordinates (for extent)
+            df_abs_top1pct: DataFrame with top 1% danger source coordinates
             grid_resolution: Downsampling factor (10 = every 10th pixel)
             sigma: Distance decay parameter (pixels)
         
         Returns:
-            danger_grid, extent
+            danger_grid, extent, df_abs_all
         """
         print(f"\n{'='*60}")
         print(f"Creating Danger Grid")
         print(f"{'='*60}")
         
-        # Get extent
-        y_min, y_max = df_abs['y_abs'].min(), df_abs['y_abs'].max()
-        x_min, x_max = df_abs['x_abs'].min(), df_abs['x_abs'].max()
+        # Get extent from ALL extreme pixels
+        y_min, y_max = df_abs_all['y_abs'].min(), df_abs_all['y_abs'].max()
+        x_min, x_max = df_abs_all['x_abs'].min(), df_abs_all['x_abs'].max()
         
         print(f"Grid extent: Y=[{y_min}, {y_max}], X=[{x_min}, {x_max}]")
         print(f"Grid resolution: 1/{grid_resolution} sampling")
@@ -196,19 +203,20 @@ class DangerMapper:
         
         print(f"Grid shape: {len(y_grid)} × {len(x_grid)} = {len(y_grid) * len(x_grid):,} cells")
         
-        # Build KDTree from extreme pixel locations
-        extreme_points = df_abs[['y_abs', 'x_abs']].values
-        tree = KDTree(extreme_points)
+        # Build KDTree from TOP 1% danger sources ONLY
+        danger_sources = df_abs_top1pct[['y_abs', 'x_abs']].values
+        print(f"Using {len(danger_sources):,} top 1% pixels as danger sources")
+        tree = KDTree(danger_sources)
         
         # Compute danger for each grid cell
         danger_grid = np.zeros((len(y_grid), len(x_grid)))
         
         for i, y in enumerate(tqdm(y_grid, desc="Computing danger")):
             for j, x in enumerate(x_grid):
-                # Find distance to nearest extreme pixel
+                # Find distance to nearest top 1% danger source
                 dist, _ = tree.query([y, x])
                 
-                # Danger score: 0.5 (high) near extreme pixels, 1.0 (low) far away
+                # Danger score: 0.5 (high) near danger sources, 1.0 (low) far away
                 danger_grid[i, j] = 0.5 + 0.5 * (1 - np.exp(-dist / sigma))
         
         extent = [x_min, x_max, y_min, y_max]
@@ -218,9 +226,9 @@ class DangerMapper:
         print(f"  Mean danger: {danger_grid.mean():.3f}")
         print(f"{'='*60}\n")
         
-        return danger_grid, extent, df_abs
+        return danger_grid, extent, df_abs_all, df_abs_top1pct
     
-    def save_results(self, danger_grid, extent, df_abs, output_dir):
+    def save_results(self, danger_grid, extent, df_abs_all, df_abs_top1pct, output_dir):
         """Save danger map and extreme pixel locations"""
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -232,8 +240,11 @@ class DangerMapper:
             extent=extent
         )
         
-        # Save extreme pixel locations
-        df_abs.to_csv(output_dir / 'extreme_pixel_locations.csv', index=False)
+        # Save all extreme pixel locations
+        df_abs_all.to_csv(output_dir / 'extreme_pixel_locations_all.csv', index=False)
+        
+        # Save top 1% danger sources
+        df_abs_top1pct.to_csv(output_dir / 'danger_sources_top1pct.csv', index=False)
         
         # Visualize
         fig, ax = plt.subplots(figsize=(14, 12))
@@ -248,25 +259,35 @@ class DangerMapper:
             interpolation='bilinear'
         )
         
-        # Overlay extreme pixel locations
+        # Overlay ALL extreme pixel locations (background)
         ax.scatter(
-            df_abs['x_abs'],
-            df_abs['y_abs'],
+            df_abs_all['x_abs'],
+            df_abs_all['y_abs'],
+            c='gray',
+            s=0.3,
+            alpha=0.2,
+            label=f'All extreme fire pixels ({len(df_abs_all):,})'
+        )
+        
+        # Highlight top 1% danger sources
+        ax.scatter(
+            df_abs_top1pct['x_abs'],
+            df_abs_top1pct['y_abs'],
             c='black',
-            s=0.5,
-            alpha=0.3,
-            label='Extreme fire pixels'
+            s=1.5,
+            alpha=0.8,
+            label=f'Top 1% danger sources ({len(df_abs_top1pct):,})'
         )
         
         ax.set_xlabel('X (landscape pixels)', fontsize=12, fontweight='bold')
         ax.set_ylabel('Y (landscape pixels)', fontsize=12, fontweight='bold')
-        ax.set_title('Spatial Fire Danger Map\n(Based on Extreme Fire Environmental Hypervolume)', 
+        ax.set_title('Spatial Fire Danger Map\n(Based on Proximity to Extreme Fire Hypervolume)', 
                     fontsize=14, fontweight='bold')
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label('Danger Score (0.5=High, 1.0=Low)', fontsize=11, fontweight='bold')
         
-        ax.legend(loc='upper right', fontsize=10)
+        ax.legend(loc='upper right', fontsize=9)
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map.png', dpi=300, bbox_inches='tight')
@@ -276,7 +297,8 @@ class DangerMapper:
         print(f"✓ Saved Results")
         print(f"{'='*60}")
         print(f"  {output_dir}/danger_grid.npz")
-        print(f"  {output_dir}/extreme_pixel_locations.csv ({len(df_abs):,} pixels)")
+        print(f"  {output_dir}/extreme_pixel_locations_all.csv ({len(df_abs_all):,} pixels)")
+        print(f"  {output_dir}/danger_sources_top1pct.csv ({len(df_abs_top1pct):,} pixels)")
         print(f"  {output_dir}/danger_map.png")
         print(f"{'='*60}\n")
 
@@ -303,21 +325,23 @@ def main():
     # Initialize mapper
     mapper = DangerMapper(args.data_root, args.resize_to)
     
-    # Load top 1% pixels
-    df_top = mapper.load_top_1pct_pixels(args.u_space, args.salience)
+    # Load all extreme pixels and top 1%
+    df_all_extreme, df_top1pct = mapper.load_extreme_and_top1pct_pixels(args.u_space, args.salience)
     
     # Map to absolute coordinates
-    df_abs = mapper.map_to_absolute_coords(df_top)
+    df_abs_all = mapper.map_to_absolute_coords(df_all_extreme)
+    df_abs_top1pct = mapper.map_to_absolute_coords(df_top1pct)
     
     # Create danger grid
-    danger_grid, extent, df_abs = mapper.create_danger_grid(
-        df_abs, 
+    danger_grid, extent, df_abs_all, df_abs_top1pct = mapper.create_danger_grid(
+        df_abs_all,
+        df_abs_top1pct,
         grid_resolution=args.grid_resolution,
         sigma=args.sigma
     )
     
     # Save results
-    mapper.save_results(danger_grid, extent, df_abs, args.output)
+    mapper.save_results(danger_grid, extent, df_abs_all, df_abs_top1pct, args.output)
     
     print(f"\n{'='*60}")
     print(f"✓ Danger Map Creation Complete")
