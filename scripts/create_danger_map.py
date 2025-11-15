@@ -283,6 +283,9 @@ class DangerMapper:
         H, W = self.landscape_shape
         danger_grid = np.full((H, W), np.nan, dtype=np.float32)
         
+        # Verify we only assign to valid pixels
+        print(f"  Initial danger_grid: all NaN = {np.all(np.isnan(danger_grid))}")
+        
         # Band mapping (actual GeoTIFF structure)
         band_idx = {
             'forest': 0,
@@ -330,8 +333,19 @@ class DangerMapper:
             distance = self.compute_distance_to_envelope(U)
             distances_list.append(distance)
             
-            # Assign danger score (cap at 1.0 for display)
-            danger_score = min(distance, 1.0)
+            # Assign danger score using old (correct) logic:
+            # Inside envelope = 0.5-0.7 (dangerous)
+            # Outside envelope = 0.7-1.0 (safer)
+            if distance == 0.0:
+                # Inside envelope - use occupancy as measure within danger zone
+                danger_score = 0.5
+            elif distance < 0.5:
+                # Close to envelope
+                danger_score = 0.5 + 0.4 * (distance / 0.5)  # 0.5 to 0.9
+            else:
+                # Far from envelope
+                danger_score = 0.9 + 0.1 * min((distance - 0.5) / 0.5, 1.0)  # 0.9 to 1.0
+            
             danger_grid[y, x] = danger_score
             
             # Save high-danger pixels (distance < 0.3)
@@ -364,13 +378,16 @@ class DangerMapper:
         print(f"    Inside envelope (dist=0): {(distances_arr == 0.0).sum():,} ({(distances_arr == 0.0).sum()/len(distances_arr)*100:.1f}%)")
         
         print(f"\n✓ Danger map created")
+        print(f"  NaN pixels in danger_grid: {np.isnan(danger_grid).sum():,} / {danger_grid.size:,}")
+        print(f"  Valid pixels match mask: {(~np.isnan(danger_grid) == self.valid_mask).all()}")
+        
         valid_danger = danger_grid[~np.isnan(danger_grid)]
         print(f"  Valid pixels: {len(valid_danger):,}")
-        print(f"  Danger score range: [{valid_danger.min():.3f}, {valid_danger.max():.3f}] (0=extreme, 1=safe)")
+        print(f"  Danger score range: [{valid_danger.min():.3f}, {valid_danger.max():.3f}] (0.5=extreme, 1.0=safe)")
         print(f"  Mean danger score: {valid_danger.mean():.3f}")
-        print(f"  Extreme danger (score < 0.1): {(valid_danger < 0.1).sum():,} ({(valid_danger < 0.1).sum()/len(valid_danger)*100:.1f}%)")
-        print(f"  High danger (score < 0.3): {(valid_danger < 0.3).sum():,} ({(valid_danger < 0.3).sum()/len(valid_danger)*100:.1f}%)")
-        print(f"  Moderate danger (score < 0.5): {(valid_danger < 0.5).sum():,} ({(valid_danger < 0.5).sum()/len(valid_danger)*100:.1f}%)")
+        print(f"  Extreme danger (score < 0.6): {(valid_danger < 0.6).sum():,} ({(valid_danger < 0.6).sum()/len(valid_danger)*100:.1f}%)")
+        print(f"  High danger (score < 0.7): {(valid_danger < 0.7).sum():,} ({(valid_danger < 0.7).sum()/len(valid_danger)*100:.1f}%)")
+        print(f"  Moderate danger (score < 0.8): {(valid_danger < 0.8).sum():,} ({(valid_danger < 0.8).sum()/len(valid_danger)*100:.1f}%)")
         print(f"  Danger zone pixels saved: {len(danger_pixel_data):,}")
         print(f"{'='*60}\n")
         
@@ -465,8 +482,8 @@ class DangerMapper:
         
         danger_masked = np.ma.masked_invalid(danger_grid)
         
-        # Use fixed scale [0, 1.0] for consistent interpretation
-        vmin = 0.0
+        # Use fixed scale [0.5, 1.0] for consistent interpretation (old behavior)
+        vmin = 0.5
         vmax = 1.0
         
         im = ax.imshow(
@@ -487,7 +504,7 @@ class DangerMapper:
                     fontsize=15, fontweight='bold', pad=20)
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label('Danger Score\n(0.0=Extreme, 1.0=Safe)', fontsize=11, fontweight='bold')
+        cbar.set_label('Danger Score\n(0.5=Extreme, 1.0=Safe)', fontsize=11, fontweight='bold')
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map.png', dpi=300, bbox_inches='tight')
@@ -512,7 +529,7 @@ class DangerMapper:
                     fontsize=15, fontweight='bold', pad=20)
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label('Danger Score\n(0.0=Extreme, 1.0=Safe)', fontsize=11, fontweight='bold')
+        cbar.set_label('Danger Score\n(0.5=Extreme, 1.0=Safe)', fontsize=11, fontweight='bold')
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map_only.png', dpi=300, bbox_inches='tight')
