@@ -313,19 +313,25 @@ class DangerMapper:
             interpolation='bilinear'
         )
         
-        # Overlay danger map - mask both invalid areas AND low-danger areas
+        # Overlay danger map - mask only invalid areas (show all danger levels)
         danger_masked = np.ma.masked_where(
-            (danger_grid_masked > 0.95) | np.isnan(danger_grid_masked), 
+            np.isnan(danger_grid_masked), 
             danger_grid_masked
         )
+        
+        # Use colormap: black-orange (0.5) → white (1.0)
+        from matplotlib.colors import LinearSegmentedColormap
+        colors = ['#000000', '#FF4500', '#FFA500', '#FFFF00', '#FFFFFF']  # black→red-orange→orange→yellow→white
+        n_bins = 100
+        cmap_danger = LinearSegmentedColormap.from_list('danger', colors, N=n_bins)
         
         im = ax.imshow(
             danger_masked,
             extent=extent,
             origin='upper',
-            cmap='YlOrRd',  # Yellow→Orange→Red for danger
+            cmap=cmap_danger,
             vmin=0.5,
-            vmax=0.95,
+            vmax=1.0,
             alpha=0.8,
             interpolation='bilinear'
         )
@@ -360,7 +366,7 @@ class DangerMapper:
         ax.set_ylim(self.landscape_shape[0], 0)
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label('Danger Level\n(Yellow=Moderate, Red=Extreme)', fontsize=11, fontweight='bold')
+        cbar.set_label('Danger Score\n(0.5=High Danger, 1.0=Low Danger)', fontsize=11, fontweight='bold')
         
         ax.legend(loc='upper right', fontsize=9, framealpha=0.9)
         
