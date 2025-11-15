@@ -343,72 +343,68 @@ class DangerMapper:
                     # Compute distance to envelope
                     distance = self.compute_distance_to_envelope(U)
                     distance_grid[y, x] = distance
+                    
+                    # Track pixels truly inside envelope (before normalization)
+                    if distance == 0.0:
+                        inside_count += 1
+                        sample_features.append(pixel_features.copy())
         
         # Normalize distances to [0, 1] based on actual range
-        valid_distances = distance_grid[~np.isnan(distance_grid)]
+        valid_distances = distance_grid[self.valid_mask]
         min_dist = valid_distances.min()
         max_dist = valid_distances.max()
         
         print(f"\n  Distance range: [{min_dist:.4f}, {max_dist:.4f}]")
         print(f"  Pass 2: Normalizing to danger scores...")
         
-        # Second pass: normalize and collect danger pixels
-        for y in range(H):
-            for x in range(W):
-                # Skip invalid pixels
-                if not self.valid_mask[y, x] or np.isnan(distance_grid[y, x]):
-                    continue
+        # Get valid pixel coordinates
+        y_coords, x_coords = np.where(self.valid_mask)
+        
+        # Second pass: normalize only valid pixels and collect danger pixels
+        for y, x in zip(y_coords, x_coords):
+            distance = distance_grid[y, x]
+            
+            # Normalize to [0, 1]
+            if max_dist > min_dist:
+                danger_score = (distance - min_dist) / (max_dist - min_dist)
+            else:
+                danger_score = 0.0
+            
+            danger_grid[y, x] = danger_score
+            
+            # Save only pixels truly inside envelope (raw distance was 0.0)
+            if distance == 0.0:
+                # Get pixel features
+                pixel_features = {
+                    'forest': self.landscape[band_idx['forest'], y, x],
+                    'arqueo': self.landscape[band_idx['arqueo'], y, x],
+                    'cbd': self.landscape[band_idx['cbd'], y, x],
+                    'cbh': self.landscape[band_idx['cbh'], y, x],
+                    'elevation': self.landscape[band_idx['elevation'], y, x],
+                    'flora': self.landscape[band_idx['flora'], y, x],
+                    'paleo': self.landscape[band_idx['paleo'], y, x],
+                    'urbana': self.landscape[band_idx['urbana'], y, x],
+                    'wind_speed': wind_speed_normalized,
+                    'wind_direction': typical_wind_dir,
+                }
                 
-                distance = distance_grid[y, x]
-                
-                # Normalize to [0, 1]
-                if max_dist > min_dist:
-                    danger_score = (distance - min_dist) / (max_dist - min_dist)
-                else:
-                    danger_score = 0.0
-                
-                danger_grid[y, x] = danger_score
-                
-                # Track inside envelope pixels (distance == 0)
-                if distance == 0.0:
-                    inside_count += 1
-                    
-                    # Get pixel features again
-                    pixel_features = {
-                        'forest': self.landscape[band_idx['forest'], y, x],
-                        'arqueo': self.landscape[band_idx['arqueo'], y, x],
-                        'cbd': self.landscape[band_idx['cbd'], y, x],
-                        'cbh': self.landscape[band_idx['cbh'], y, x],
-                        'elevation': self.landscape[band_idx['elevation'], y, x],
-                        'flora': self.landscape[band_idx['flora'], y, x],
-                        'paleo': self.landscape[band_idx['paleo'], y, x],
-                        'urbana': self.landscape[band_idx['urbana'], y, x],
-                        'wind_speed': wind_speed_normalized,
-                        'wind_direction': typical_wind_dir,
-                    }
-                    
-                    # Capture for analysis
-                    danger_record = {
-                        'y': y,
-                        'x': x,
-                        'forest': pixel_features['forest'],
-                        'arqueo': pixel_features['arqueo'],
-                        'cbd': pixel_features['cbd'],
-                        'cbh': pixel_features['cbh'],
-                        'elevation': pixel_features['elevation'],
-                        'flora': pixel_features['flora'],
-                        'paleo': pixel_features['paleo'],
-                        'urbana': pixel_features['urbana'],
-                        'wind_speed': pixel_features['wind_speed'],
-                        'wind_direction': pixel_features['wind_direction'],
-                        'distance_to_envelope': distance,
-                        'danger_score': danger_score,
-                    }
-                    danger_pixel_data.append(danger_record)
-                
-                # Debug: sample first 10 pixels
-                if len(sample_features) < 10:
-                    sample_features.append(pixel_features)
+                danger_record = {
+                    'y': y,
+                    'x': x,
+                    'forest': pixel_features['forest'],
+                    'arqueo': pixel_features['arqueo'],
+                    'cbd': pixel_features['cbd'],
+                    'cbh': pixel_features['cbh'],
+                    'elevation': pixel_features['elevation'],
+                    'flora': pixel_features['flora'],
+                    'paleo': pixel_features['paleo'],
+                    'urbana': pixel_features['urbana'],
+                    'wind_speed': pixel_features['wind_speed'],
+                    'wind_direction': pixel_features['wind_direction'],
+                    'distance_to_envelope': distance,
+                    'danger_score': danger_score,
+                }
+                danger_pixel_data.append(danger_record)
         
         # Debug output
         if len(u_values) > 0:
