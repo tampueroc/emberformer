@@ -244,11 +244,32 @@ class DangerMapper:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         
+        # Load landscape to create valid data mask
+        landscape_path = self.data_root / 'landscape' / 'Input_Geotiff.tif'
+        with rasterio.open(landscape_path) as src:
+            # Band 4 = fuel_load (most relevant for fire)
+            fuel_load = src.read(4).astype(float)
+            # Create mask for valid landscape data (not NoData)
+            valid_mask = fuel_load != -9999
+            # Mask NoData for visualization
+            fuel_load[~valid_mask] = np.nan
+        
+        # Downsample valid_mask to match danger_grid resolution
+        from scipy.ndimage import zoom
+        zoom_factor = (danger_grid.shape[0] / valid_mask.shape[0], 
+                      danger_grid.shape[1] / valid_mask.shape[1])
+        valid_mask_ds = zoom(valid_mask.astype(float), zoom_factor, order=0) > 0.5
+        
+        # Apply landscape mask to danger grid
+        danger_grid_masked = danger_grid.copy()
+        danger_grid_masked[~valid_mask_ds] = np.nan
+        
         # Save danger grid as numpy
         np.savez_compressed(
             output_dir / 'danger_grid.npz',
-            danger=danger_grid,
-            extent=extent
+            danger=danger_grid_masked,
+            extent=extent,
+            valid_mask=valid_mask_ds
         )
         
         # Save all extreme pixel locations
@@ -259,14 +280,6 @@ class DangerMapper:
         
         # Visualize with landscape background
         print(f"Creating visualization with fuel load background...")
-        
-        # Load landscape for background
-        landscape_path = self.data_root / 'landscape' / 'Input_Geotiff.tif'
-        with rasterio.open(landscape_path) as src:
-            # Band 4 = fuel_load (most relevant for fire)
-            fuel_load = src.read(4).astype(float)
-            # Mask NoData (-9999)
-            fuel_load[fuel_load == -9999] = np.nan
         
         fig, ax = plt.subplots(figsize=(18, 14))
         
@@ -280,9 +293,11 @@ class DangerMapper:
             interpolation='bilinear'
         )
         
-        # Overlay danger map (only where danger < 1.0, i.e., near danger sources)
-        # Mask areas far from danger
-        danger_masked = np.ma.masked_where(danger_grid > 0.95, danger_grid)
+        # Overlay danger map - mask both invalid areas AND low-danger areas
+        danger_masked = np.ma.masked_where(
+            (danger_grid_masked > 0.95) | np.isnan(danger_grid_masked), 
+            danger_grid_masked
+        )
         
         im = ax.imshow(
             danger_masked,
