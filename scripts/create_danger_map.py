@@ -349,31 +349,36 @@ class DangerMapper:
                         inside_count += 1
                         sample_features.append(pixel_features.copy())
         
-        # Normalize distances to [0, 1] based on actual range
+        # Get statistics on distances
         valid_distances = distance_grid[self.valid_mask]
         min_dist = valid_distances.min()
         max_dist = valid_distances.max()
+        inside_envelope_count = (valid_distances == 0.0).sum()
         
-        print(f"\n  Distance range: [{min_dist:.4f}, {max_dist:.4f}]")
-        print(f"  Pass 2: Normalizing to danger scores...")
+        print(f"\n  Distance statistics:")
+        print(f"    Min: {min_dist:.4f}")
+        print(f"    Max: {max_dist:.4f}")
+        print(f"    Mean: {valid_distances.mean():.4f}")
+        print(f"    Pixels inside envelope: {inside_envelope_count:,} ({inside_envelope_count/len(valid_distances)*100:.1f}%)")
+        print(f"  Pass 2: Converting to danger scores...")
         
         # Get valid pixel coordinates
         y_coords, x_coords = np.where(self.valid_mask)
         
-        # Second pass: normalize only valid pixels and collect danger pixels
+        # Second pass: convert distances to danger scores using absolute thresholds
         for y, x in zip(y_coords, x_coords):
             distance = distance_grid[y, x]
             
-            # Normalize to [0, 1]
-            if max_dist > min_dist:
-                danger_score = (distance - min_dist) / (max_dist - min_dist)
-            else:
-                danger_score = 0.0
+            # Convert distance to danger score [0=max danger, 1=safe]
+            # Inside envelope (distance=0) = highest danger (0.0)
+            # Close to envelope (distance<0.5) = high danger (0.0-0.5)
+            # Far from envelope (distance>=0.5) = lower danger (0.5-1.0, capped at 1.0)
+            danger_score = min(distance, 1.0)
             
             danger_grid[y, x] = danger_score
             
-            # Save only pixels truly inside envelope (raw distance was 0.0)
-            if distance == 0.0:
+            # Save pixels inside envelope or very close (distance < 0.3)
+            if distance < 0.3:
                 # Get pixel features
                 pixel_features = {
                     'forest': self.landscape[band_idx['forest'], y, x],
@@ -424,10 +429,12 @@ class DangerMapper:
         print(f"\n✓ Danger map created")
         valid_danger = danger_grid[~np.isnan(danger_grid)]
         print(f"  Valid pixels: {len(valid_danger):,}")
-        print(f"  Danger range: [{valid_danger.min():.3f}, {valid_danger.max():.3f}]")
-        print(f"  Mean danger: {valid_danger.mean():.3f}")
-        print(f"  High danger pixels (< 0.7): {(valid_danger < 0.7).sum():,}")
-        print(f"  Danger zone pixels captured: {len(danger_pixel_data):,}")
+        print(f"  Danger score range: [{valid_danger.min():.3f}, {valid_danger.max():.3f}] (0=extreme, 1=safe)")
+        print(f"  Mean danger score: {valid_danger.mean():.3f}")
+        print(f"  Extreme danger (score < 0.1): {(valid_danger < 0.1).sum():,} ({(valid_danger < 0.1).sum()/len(valid_danger)*100:.1f}%)")
+        print(f"  High danger (score < 0.3): {(valid_danger < 0.3).sum():,} ({(valid_danger < 0.3).sum()/len(valid_danger)*100:.1f}%)")
+        print(f"  Moderate danger (score < 0.5): {(valid_danger < 0.5).sum():,} ({(valid_danger < 0.5).sum()/len(valid_danger)*100:.1f}%)")
+        print(f"  Danger zone pixels saved: {len(danger_pixel_data):,}")
         print(f"{'='*60}\n")
         
         # Store danger pixel data for saving
@@ -514,16 +521,16 @@ class DangerMapper:
         )
         
         # Overlay danger map
-        # Custom colormap: black (0.0 = max danger) → red → yellow → white (1.0 = safe)
-        colors = ['#000000', '#8B0000', '#FF4500', '#FFA500', '#FFFF00', '#FFFFFF']
+        # Custom colormap: black (0.0 = max danger) → red → orange → yellow → white (1.0 = safe)
+        colors = ['#000000', '#8B0000', '#FF0000', '#FF4500', '#FFA500', '#FFFF00', '#FFFFFF']
         cmap_danger = LinearSegmentedColormap.from_list('danger', colors, N=256)
         cmap_danger.set_bad(color='none', alpha=0)  # Make NaN transparent
         
         danger_masked = np.ma.masked_invalid(danger_grid)
         
-        # Use actual data range
+        # Use fixed scale [0, 1.0] for consistent interpretation
         vmin = 0.0
-        vmax = max(danger_masked.max(), 0.5)  # At least 0.5 for scale
+        vmax = 1.0
         
         im = ax.imshow(
             danger_masked,
@@ -543,7 +550,7 @@ class DangerMapper:
                     fontsize=15, fontweight='bold', pad=20)
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label(f'Danger Score\n(0.0=Extreme, {vmax:.1f}=Safer)', fontsize=11, fontweight='bold')
+        cbar.set_label('Danger Score\n(0.0=Extreme, 1.0=Safe)', fontsize=11, fontweight='bold')
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map.png', dpi=300, bbox_inches='tight')
@@ -568,7 +575,7 @@ class DangerMapper:
                     fontsize=15, fontweight='bold', pad=20)
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label(f'Danger Score\n(0.0=Extreme, {vmax:.1f}=Safer)', fontsize=11, fontweight='bold')
+        cbar.set_label('Danger Score\n(0.0=Extreme, 1.0=Safe)', fontsize=11, fontweight='bold')
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map_only.png', dpi=300, bbox_inches='tight')
