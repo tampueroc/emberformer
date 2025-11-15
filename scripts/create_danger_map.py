@@ -97,6 +97,13 @@ class DangerMapper:
         self.envelope_mask = envelope_data['envelope_mask']
         self.envelope_bounds = envelope_data['bounds']
         
+        # Load hull vertices for distance computation if available
+        if 'hull_vertices' in envelope_data:
+            self.hull_vertices = envelope_data['hull_vertices']
+            print(f"  Loaded {len(self.hull_vertices):,} hull vertices for distance computation")
+        else:
+            self.hull_vertices = None
+        
         # Load summary
         with open(che_dir / 'summary.json', 'r') as f:
             che_summary = json.load(f)
@@ -172,15 +179,51 @@ class DangerMapper:
         
         return U
     
-    def check_envelope_membership(self, U):
-        """Check if U-space point is inside CHE envelope (2D or 3D)"""
-        n_dims = self.envelope_bounds[0].shape[0]
-        U_check = U[:n_dims]  # Use only dimensions CHE was built with
+    def compute_distance_to_envelope(self, U):
+        """
+        Compute distance from U-space point to CHE envelope boundary
         
+        Returns:
+            distance: Normalized distance (0 = inside envelope, 1+ = far outside)
+        """
+        n_dims = self.envelope_bounds[0].shape[0]
+        U_check = U[:n_dims]
+        
+        # Check if we have hull vertices for accurate distance
+        if self.hull_vertices is not None and len(self.hull_vertices) > 0:
+            from scipy.spatial.distance import cdist
+            # Distance to nearest hull vertex
+            distances = cdist([U_check], self.hull_vertices[:, :n_dims])
+            min_dist = distances.min()
+            
+            # Check if inside envelope (using grid)
+            inside = self._check_inside_grid(U_check, n_dims)
+            
+            if inside:
+                # Inside envelope = 0 distance (most dangerous)
+                return 0.0
+            else:
+                # Outside envelope = distance to boundary
+                # Normalize by typical envelope radius for [0, 1+] range
+                envelope_radius = np.linalg.norm(self.envelope_bounds[1] - self.envelope_bounds[0]) / 2
+                normalized_dist = min_dist / envelope_radius
+                return normalized_dist
+        
+        else:
+            # Fallback: use grid occupancy as proxy
+            inside, occupancy_dist = self._check_inside_grid(U_check, n_dims, return_occupancy=True)
+            if inside:
+                return 0.0
+            else:
+                # Use inverse occupancy as distance proxy
+                return 1.0 + occupancy_dist
+    
+    def _check_inside_grid(self, U_check, n_dims, return_occupancy=False):
+        """Helper to check if point is inside envelope using grid"""
         # Check if outside bounds
         for i in range(n_dims):
             if U_check[i] < self.envelope_bounds[0][i] or U_check[i] > self.envelope_bounds[1][i]:
-                return False, float('inf')
+                return (False, float('inf')) if return_occupancy else False
         
         # Map to grid indices
         if n_dims == 2:
@@ -204,12 +247,15 @@ class DangerMapper:
                 idx = np.clip(idx, 0, self.occupancy_grid.shape[dim] - 1)
                 indices.append(idx)
             
-            inside = bool(self.envelope_mask[indices[1], indices[0], indices[2]])  # Y, X, Z
+            inside = bool(self.envelope_mask[indices[1], indices[0], indices[2]])
             occupancy = float(self.occupancy_grid[indices[1], indices[0], indices[2]])
         else:
             raise ValueError(f"Only 2D and 3D envelopes supported, got {n_dims}D")
         
-        return inside, 1.0 - occupancy
+        if return_occupancy:
+            return inside, 1.0 - occupancy
+        else:
+            return inside
     
     def create_danger_map(self, typical_wind_speed=5.0, typical_wind_dir=180.0, chunk_size=1000):
         """
@@ -295,15 +341,21 @@ class DangerMapper:
                     if len(u_values) < 1000:
                         u_values.append(U[:2])
                     
-                    # Check envelope membership
-                    inside, distance = self.check_envelope_membership(U)
+                    # Compute distance to envelope
+                    distance = self.compute_distance_to_envelope(U)
                     
-                    if inside:
+                    # Map distance to danger score
+                    # 0.0 distance (inside) = 0.0 danger score (most dangerous)
+                    # Increasing distance = increasing score (less dangerous)
+                    # Scale: 0 → 0.0, 1 → 0.5, 2+ → 1.0
+                    danger_score = np.clip(distance / 2.0, 0.0, 1.0)
+                    danger_grid[y, x] = danger_score
+                    
+                    # Track inside envelope pixels
+                    if distance == 0.0:
                         inside_count += 1
-                        # Inside envelope = high danger (0.5-0.7 based on occupancy)
-                        danger_grid[y, x] = 0.5 + 0.2 * distance
                         
-                        # Capture raw features for danger zone pixels
+                        # Capture raw features for danger zone pixels (inside envelope)
                         danger_record = {
                             'y': y,
                             'x': x,
@@ -317,12 +369,10 @@ class DangerMapper:
                             'urbana': pixel_features['urbana'],
                             'wind_speed': pixel_features['wind_speed'],
                             'wind_direction': pixel_features['wind_direction'],
-                            'danger_score': 0.5 + 0.2 * distance,
+                            'distance_to_envelope': distance,
+                            'danger_score': danger_score,
                         }
                         danger_pixel_data.append(danger_record)
-                    else:
-                        # Outside envelope = lower danger (0.7-1.0 based on distance)
-                        danger_grid[y, x] = 0.7 + 0.3 * min(distance, 1.0)
         
         # Debug output
         if len(u_values) > 0:
