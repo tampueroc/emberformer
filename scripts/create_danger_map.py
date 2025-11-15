@@ -258,65 +258,63 @@ class DangerMapper:
         df_abs_top1pct.to_csv(output_dir / 'danger_sources_top1pct.csv', index=False)
         
         # Visualize with landscape background
-        print(f"Creating visualization with landscape background...")
+        print(f"Creating visualization with fuel load background...")
         
         # Load landscape for background
         landscape_path = self.data_root / 'landscape' / 'Input_Geotiff.tif'
         with rasterio.open(landscape_path) as src:
-            # Read first band (elevation) for background
-            landscape_band = src.read(1)
+            # Band 4 = fuel_load (most relevant for fire)
+            fuel_load = src.read(4).astype(float)
+            # Mask NoData (-9999)
+            fuel_load[fuel_load == -9999] = np.nan
         
-        fig, ax = plt.subplots(figsize=(16, 14))
+        fig, ax = plt.subplots(figsize=(18, 14))
         
-        # Show landscape as background (grayscale)
-        # Downsample landscape for visualization
-        from scipy.ndimage import zoom
-        ds_factor = danger_grid.shape[0] / landscape_band.shape[0]
-        landscape_ds = zoom(landscape_band, ds_factor, order=1)
-        
-        ax.imshow(landscape_ds, cmap='gray', alpha=0.3, extent=extent, origin='upper')
-        
-        # Overlay danger map
-        im = ax.imshow(
-            danger_grid,
-            extent=extent,
+        # Show fuel load as background
+        im_bg = ax.imshow(
+            fuel_load, 
+            cmap='YlGn',  # Yellow to Green for fuel
+            alpha=0.5, 
+            extent=extent, 
             origin='upper',
-            cmap='RdYlGn_r',  # Red=danger, Green=safe
-            vmin=0.5,
-            vmax=1.0,
-            alpha=0.7,
             interpolation='bilinear'
         )
         
-        # Overlay ALL extreme pixel locations (light gray)
-        ax.scatter(
-            df_abs_all['x_abs'],
-            df_abs_all['y_abs'],
-            c='lightgray',
-            s=0.2,
-            alpha=0.3,
-            label=f'Extreme fire pixels ({len(df_abs_all):,})'
+        # Overlay danger map (only where danger < 1.0, i.e., near danger sources)
+        # Mask areas far from danger
+        danger_masked = np.ma.masked_where(danger_grid > 0.95, danger_grid)
+        
+        im = ax.imshow(
+            danger_masked,
+            extent=extent,
+            origin='upper',
+            cmap='YlOrRd',  # Yellow→Orange→Red for danger
+            vmin=0.5,
+            vmax=0.95,
+            alpha=0.8,
+            interpolation='bilinear'
         )
         
-        # Highlight top 1% danger sources (bright markers)
+        # Highlight top 1% danger sources ONLY (don't plot all 1M pixels)
         ax.scatter(
             df_abs_top1pct['x_abs'],
             df_abs_top1pct['y_abs'],
-            c='red',
-            s=2,
+            c='darkred',
+            s=5,
             alpha=0.9,
-            edgecolors='darkred',
-            linewidths=0.3,
+            edgecolors='black',
+            linewidths=0.5,
+            marker='*',
             label=f'Top 1% danger sources ({len(df_abs_top1pct):,})'
         )
         
-        ax.set_xlabel('X (landscape pixels)', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Y (landscape pixels)', fontsize=12, fontweight='bold')
-        ax.set_title('Spatial Fire Danger Map Over Full Landscape\n(Proximity to Extreme Fire Environmental Hypervolume)', 
-                    fontsize=14, fontweight='bold')
+        ax.set_xlabel('X (landscape pixels)', fontsize=13, fontweight='bold')
+        ax.set_ylabel('Y (landscape pixels)', fontsize=13, fontweight='bold')
+        ax.set_title('Fire Danger Map: Full Landscape\nDanger = Proximity to Extreme Fire Environmental Hypervolume', 
+                    fontsize=15, fontweight='bold', pad=20)
         
-        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_label('Danger Score (0.5=High, 1.0=Low)', fontsize=11, fontweight='bold')
+        cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
+        cbar.set_label('Danger Level\n(Yellow=Moderate, Red=Extreme)', fontsize=11, fontweight='bold')
         
         ax.legend(loc='upper right', fontsize=9, framealpha=0.9)
         
