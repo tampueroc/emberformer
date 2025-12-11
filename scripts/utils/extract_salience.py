@@ -26,8 +26,21 @@ from tqdm import tqdm
 import pyarrow as pa
 import pyarrow.parquet as pq
 import json
+import subprocess
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+
+def get_git_commit_hash():
+    """Get short git commit hash for output directory naming"""
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True, check=True
+        )
+        return result.stdout.strip()
+    except Exception:
+        return 'unknown'
 
 from data import RawFireDataset
 from models.emberformer import EmberFormerDINO
@@ -284,6 +297,12 @@ def main():
     
     args = parser.parse_args()
     
+    # Append git commit hash to output directory
+    commit_hash = get_git_commit_hash()
+    output_dir = Path(args.output) / commit_hash
+    print(f"Git commit: {commit_hash}")
+    print(f"Output directory: {output_dir}\n")
+    
     # Set device
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}\n")
@@ -334,7 +353,7 @@ def main():
         buffer_size=args.buffer_size
     )
     
-    extractor.process_dataset(dataset, args.output, args.num_samples, args.batch_size)
+    extractor.process_dataset(dataset, output_dir, args.num_samples, args.batch_size)
 
 
 if __name__ == '__main__':
