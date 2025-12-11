@@ -22,6 +22,7 @@ import numpy as np
 from pathlib import Path
 import argparse
 import json
+import subprocess
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import rasterio
@@ -30,6 +31,20 @@ import pandas as pd
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+
+def get_git_commit_hash():
+    """Get short git commit hash for output directory naming"""
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True, check=True
+        )
+        return result.stdout.strip()
+    except Exception:
+        return 'unknown'
+
+
 from data.transforms import LandscapeNormalize
 
 
@@ -541,6 +556,12 @@ def main():
     
     args = parser.parse_args()
     
+    # Append git commit hash to output directory
+    commit_hash = get_git_commit_hash()
+    output_dir = Path(args.output) / commit_hash
+    print(f"Git commit: {commit_hash}")
+    print(f"Output directory: {output_dir}\n")
+    
     # Initialize mapper
     mapper = DangerMapper(args.data_root)
     
@@ -554,7 +575,7 @@ def main():
     danger_grid = mapper.create_danger_map(chunk_size=args.chunk_size)
     
     # Save results
-    mapper.save_results(danger_grid, args.output)
+    mapper.save_results(danger_grid, output_dir)
     
     print(f"\n{'='*60}")
     print(f"✓ Danger Map Creation Complete")

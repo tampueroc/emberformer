@@ -21,11 +21,24 @@ import numpy as np
 from pathlib import Path
 import argparse
 import json
+import subprocess
 from scipy.spatial import ConvexHull
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.covariance import EllipticEnvelope
 from tqdm import tqdm
 import time
+
+
+def get_git_commit_hash():
+    """Get short git commit hash for output directory naming"""
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True, check=True
+        )
+        return result.stdout.strip()
+    except Exception:
+        return 'unknown'
 
 
 class CHEEnvelope:
@@ -308,6 +321,12 @@ def main():
     
     args = parser.parse_args()
     
+    # Append git commit hash to output directory
+    commit_hash = get_git_commit_hash()
+    output_dir = Path(args.output) / commit_hash
+    print(f"Git commit: {commit_hash}")
+    print(f"Output directory: {output_dir}\n")
+    
     # Set seed
     np.random.seed(args.seed)
     
@@ -343,7 +362,7 @@ def main():
     print(f"\n{'='*60}")
     print(f"Saving Results")
     print(f"{'='*60}")
-    che.save(args.output, stats)
+    che.save(output_dir, stats)
     
     print(f"\n{'='*60}")
     print(f"✓ CHE Complete")

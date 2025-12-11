@@ -21,9 +21,22 @@ import pyarrow.parquet as pq
 from pathlib import Path
 import argparse
 import json
+import subprocess
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from tqdm import tqdm
+
+
+def get_git_commit_hash():
+    """Get short git commit hash for output directory naming"""
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True, check=True
+        )
+        return result.stdout.strip()
+    except Exception:
+        return 'unknown'
 
 
 class USpacePrep:
@@ -219,6 +232,12 @@ def main():
     
     args = parser.parse_args()
     
+    # Append git commit hash to output directory
+    commit_hash = get_git_commit_hash()
+    output_dir = Path(args.output) / commit_hash
+    print(f"Git commit: {commit_hash}")
+    print(f"Output directory: {output_dir}\n")
+    
     # Initialize
     prep = USpacePrep(
         max_components=args.max_components,
@@ -236,7 +255,7 @@ def main():
     U = prep.fit_transform(X)
     
     # Save
-    prep.save(U, metadata, args.output)
+    prep.save(U, metadata, output_dir)
 
 
 if __name__ == '__main__':
