@@ -27,11 +27,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import json
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from data import RawFireDataset
 from models.emberformer import EmberFormerDINO
-from scripts.analyze_gradcam import GradCAM, load_model
+from scripts.archive.analyze_gradcam import GradCAM, load_model
 import torchvision.transforms.functional as TF
 from torch.utils.data import DataLoader, Subset
 
