@@ -39,3 +39,20 @@ python scripts/pipeline/create_danger_map.py --u_space data/u_space --che data/c
 - **U-Space**: PCA-reduced environmental feature space (≤5 dims, ≥80% variance)
 - **CHE**: Convex Hull Ensemble - robust envelope via bootstrap voting
 - **Danger Score**: 0.5 = inside envelope (extreme), 1.0 = far from envelope (safe)
+- **Landscape-only**: Wind is excluded (temporal/weather) to identify dangerous **locations** regardless of weather
+
+## Features (8 landscape bands)
+
+| Feature | Band | Description |
+|---------|------|-------------|
+| `forest` | 0 | Forest type classification |
+| `arqueo` | 1 | Archaeological sites |
+| `cbd` | 2 | Canopy Bulk Density |
+| `cbh` | 3 | Canopy Base Height |
+| `elevation` | 4 | Terrain elevation (m) |
+| `flora` | 5 | Flora classification |
+| `paleo` | 6 | Paleontological sites |
+| `urbana` | 7 | Urban area classification |
+
+> **Note:** Wind speed/direction are extracted but excluded from U-space projection.
+> This identifies locations with dangerous landscape characteristics, independent of weather.
