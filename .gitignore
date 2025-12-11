@@ -76,3 +76,4 @@ analysis/phase_*/wind/*.png
 # OS
 .DS_Store
 Thumbs.db
+data/salience/
