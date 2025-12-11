@@ -195,7 +195,7 @@ class SalienceExtractor:
         
         # Custom collate that returns indices
         def collate_with_indices(batch):
-            from scripts.train_dino import collate_raw_dino
+            from scripts.training.train_dino import collate_raw_dino
             indices = [item[0] for item in batch]
             samples = [item[1] for item in batch]
             collated = collate_raw_dino(samples)
