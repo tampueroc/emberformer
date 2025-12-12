@@ -41,18 +41,19 @@ python scripts/pipeline/create_danger_map.py --u_space data/u_space --che data/c
 - **Danger Score**: 0.5 = inside envelope (extreme), 1.0 = far from envelope (safe)
 - **Landscape-only**: Wind is excluded (temporal/weather) to identify dangerous **locations** regardless of weather
 
-## Features (8 landscape bands)
+## Features (4 used for U-space)
 
-| Feature | Band | Description |
-|---------|------|-------------|
-| `forest` | 0 | Forest type classification |
-| `arqueo` | 1 | Archaeological sites |
-| `cbd` | 2 | Canopy Bulk Density |
-| `cbh` | 3 | Canopy Base Height |
-| `elevation` | 4 | Terrain elevation (m) |
-| `flora` | 5 | Flora classification |
-| `paleo` | 6 | Paleontological sites |
-| `urbana` | 7 | Urban area classification |
+| Feature | Band | Description | Status |
+|---------|------|-------------|--------|
+| `forest` | 0 | Forest type classification | ✅ Used |
+| `cbd` | 2 | Canopy Bulk Density | ✅ Used |
+| `cbh` | 3 | Canopy Base Height | ✅ Used |
+| `elevation` | 4 | Terrain elevation (m) | ✅ Used |
+| `arqueo` | 1 | Archaeological sites | ❌ Excluded (nodata-dominated) |
+| `flora` | 5 | Flora classification | ❌ Excluded (constant) |
+| `paleo` | 6 | Paleontological sites | ❌ Excluded (constant) |
+| `urbana` | 7 | Urban area classification | ❌ Excluded (constant) |
+| `wind_*` | - | Wind speed/direction | ❌ Excluded (temporal) |
 
-> **Note:** Wind speed/direction are extracted but excluded from U-space projection.
-> This identifies locations with dangerous landscape characteristics, independent of weather.
+> **Note:** Features dominated by nodata values or constant across the landscape are excluded.
+> This ensures U-space projections are comparable between fire regions and full landscape.

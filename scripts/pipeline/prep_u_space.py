@@ -108,18 +108,26 @@ class USpacePrep:
         features = {}
         feature_list = []
         
-        # Static features (keep as-is)
-        for feat in ['forest', 'arqueo', 'cbd', 'cbh', 'elevation', 'flora', 'paleo', 'urbana']:
+        # Only use features with meaningful variance (not nodata-dominated)
+        # Excluded: arqueo, flora, paleo, urbana (constant ~1 or dominated by nodata=-1)
+        valid_features = ['forest', 'cbd', 'cbh', 'elevation']
+        excluded_features = ['arqueo', 'flora', 'paleo', 'urbana']
+        
+        for feat in valid_features:
             if feat in data:
                 features[feat] = np.array(data[feat], dtype=np.float32)
                 feature_list.append(feat)
                 print(f"  ✓ {feat}: {features[feat].shape[0]:,} values")
         
+        # Log excluded features
+        for feat in excluded_features:
+            if feat in data:
+                print(f"  ⊗ {feat}: excluded (nodata-dominated, constant in landscape)")
+        
         # SKIP WIND: It's constant across extreme fires (~0.6° at 9.7 m/s)
         # Wind is temporal, not a landscape determinant
-        # We want to identify landscape characteristics, not weather patterns
         if 'wind_speed' in data and 'wind_direction' in data:
-            print(f"  ⊗ Skipping wind features (temporal, not landscape-based)")
+            print(f"  ⊗ wind: excluded (temporal, not landscape-based)")
         
         print(f"\nTotal features: {len(feature_list)}")
         print(f"{'='*60}\n")
