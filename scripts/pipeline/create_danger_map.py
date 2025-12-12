@@ -187,39 +187,37 @@ class DangerMapper:
         Compute distance from U-space point to CHE envelope boundary
         
         Returns:
-            distance: Normalized distance (0 = inside envelope, 1+ = far outside)
+            distance: 0 = high occupancy (dangerous), 1 = low occupancy (safe)
         """
         n_dims = self.envelope_bounds[0].shape[0]
         U_check = U[:n_dims]
         
-        # Check if we have hull vertices for accurate distance
-        if self.hull_vertices is not None and len(self.hull_vertices) > 0:
-            from scipy.spatial.distance import cdist
-            # Distance to nearest hull vertex
-            distances = cdist([U_check], self.hull_vertices[:, :n_dims])
-            min_dist = distances.min()
-            
-            # Check if inside envelope (using grid)
-            inside = self._check_inside_grid(U_check, n_dims)
-            
-            if inside:
-                # Inside envelope = 0 distance (most dangerous)
-                return 0.0
-            else:
-                # Outside envelope = distance to boundary
-                # Normalize by typical envelope radius for [0, 1+] range
-                envelope_radius = np.linalg.norm(self.envelope_bounds[1] - self.envelope_bounds[0]) / 2
-                normalized_dist = min_dist / envelope_radius
-                return normalized_dist
+        # Get occupancy at this point (how many bootstrap hulls contain it)
+        occupancy = self._get_occupancy(U_check, n_dims)
         
+        # Return inverse of occupancy: high occupancy = low distance (dangerous)
+        # occupancy 1.0 -> distance 0.0 (most dangerous)
+        # occupancy 0.0 -> distance 1.0 (safest)
+        return 1.0 - occupancy
+    
+    def _get_occupancy(self, U_check, n_dims):
+        """Get occupancy value at U-space point"""
+        # Check if outside bounds
+        for i in range(n_dims):
+            if U_check[i] < self.envelope_bounds[0][i] or U_check[i] > self.envelope_bounds[1][i]:
+                return 0.0  # Outside bounds = 0 occupancy
+        
+        # Map to grid indices
+        if n_dims == 2:
+            u1_min, u2_min = self.envelope_bounds[0]
+            u1_max, u2_max = self.envelope_bounds[1]
+            i = int((U_check[0] - u1_min) / (u1_max - u1_min) * (self.occupancy_grid.shape[1] - 1))
+            j = int((U_check[1] - u2_min) / (u2_max - u2_min) * (self.occupancy_grid.shape[0] - 1))
+            i = np.clip(i, 0, self.occupancy_grid.shape[1] - 1)
+            j = np.clip(j, 0, self.occupancy_grid.shape[0] - 1)
+            return float(self.occupancy_grid[j, i])
         else:
-            # Fallback: use grid occupancy as proxy
-            inside, occupancy_dist = self._check_inside_grid(U_check, n_dims, return_occupancy=True)
-            if inside:
-                return 0.0
-            else:
-                # Use inverse occupancy as distance proxy
-                return 1.0 + occupancy_dist
+            raise ValueError(f"Only 2D supported for now, got {n_dims}D")
     
     def _check_inside_grid(self, U_check, n_dims, return_occupancy=False):
         """Helper to check if point is inside envelope using grid"""
@@ -323,26 +321,18 @@ class DangerMapper:
             # Project to U-space
             U = self.project_to_uspace(X)
             
-            # Compute distance to envelope
+            # Compute distance to envelope (0 = high occupancy/dangerous, 1 = low/safe)
             distance = self.compute_distance_to_envelope(U)
             distances_list.append(distance)
             
-            # Assign danger score using old (correct) logic:
-            # Inside envelope = 0.5-0.7 (dangerous)
-            # Outside envelope = 0.7-1.0 (safer)
-            if distance == 0.0:
-                # Inside envelope - use occupancy as measure within danger zone
-                danger_score = 0.5
-            elif distance < 0.5:
-                # Close to envelope
-                danger_score = 0.5 + 0.4 * (distance / 0.5)  # 0.5 to 0.9
-            else:
-                # Far from envelope
-                danger_score = 0.9 + 0.1 * min((distance - 0.5) / 0.5, 1.0)  # 0.9 to 1.0
+            # Danger score = distance (already 0-1 scale)
+            # 0 = inside high-occupancy region (most dangerous)
+            # 1 = outside envelope (safest)
+            danger_score = distance
             
             danger_grid[y, x] = danger_score
             
-            # Save high-danger pixels (distance < 0.3)
+            # Save high-danger pixels (low distance = high occupancy)
             if distance < 0.3:
                 danger_record = {
                     'y': int(y),
@@ -375,11 +365,11 @@ class DangerMapper:
         
         valid_danger = danger_grid[~np.isnan(danger_grid)]
         print(f"  Valid pixels: {len(valid_danger):,}")
-        print(f"  Danger score range: [{valid_danger.min():.3f}, {valid_danger.max():.3f}] (0.5=extreme, 1.0=safe)")
+        print(f"  Danger score range: [{valid_danger.min():.3f}, {valid_danger.max():.3f}] (0=extreme, 1=safe)")
         print(f"  Mean danger score: {valid_danger.mean():.3f}")
-        print(f"  Extreme danger (score < 0.6): {(valid_danger < 0.6).sum():,} ({(valid_danger < 0.6).sum()/len(valid_danger)*100:.1f}%)")
-        print(f"  High danger (score < 0.7): {(valid_danger < 0.7).sum():,} ({(valid_danger < 0.7).sum()/len(valid_danger)*100:.1f}%)")
-        print(f"  Moderate danger (score < 0.8): {(valid_danger < 0.8).sum():,} ({(valid_danger < 0.8).sum()/len(valid_danger)*100:.1f}%)")
+        print(f"  Extreme danger (score < 0.2): {(valid_danger < 0.2).sum():,} ({(valid_danger < 0.2).sum()/len(valid_danger)*100:.1f}%)")
+        print(f"  High danger (score < 0.4): {(valid_danger < 0.4).sum():,} ({(valid_danger < 0.4).sum()/len(valid_danger)*100:.1f}%)")
+        print(f"  Moderate danger (score < 0.6): {(valid_danger < 0.6).sum():,} ({(valid_danger < 0.6).sum()/len(valid_danger)*100:.1f}%)")
         print(f"  Danger zone pixels saved: {len(danger_pixel_data):,}")
         print(f"{'='*60}\n")
         
@@ -474,8 +464,8 @@ class DangerMapper:
         
         danger_masked = np.ma.masked_invalid(danger_grid)
         
-        # Use fixed scale [0.5, 1.0] for consistent interpretation (old behavior)
-        vmin = 0.5
+        # Full scale [0, 1] - occupancy-based
+        vmin = 0.0
         vmax = 1.0
         
         im = ax.imshow(
@@ -491,12 +481,12 @@ class DangerMapper:
         
         ax.set_xlabel('X (landscape pixels)', fontsize=13, fontweight='bold')
         ax.set_ylabel('Y (landscape pixels)', fontsize=13, fontweight='bold')
-        ax.set_title('Fire Danger Map: Distance to Extreme Fire Hypervolume\n'
-                    'Darker = Closer to extreme fire conditions',
+        ax.set_title('Fire Danger Map: CHE Occupancy in U-Space\n'
+                    'Darker = Higher occupancy (more extreme fire conditions)',
                     fontsize=15, fontweight='bold', pad=20)
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label('Danger Score\n(0.5=Extreme, 1.0=Safe)', fontsize=11, fontweight='bold')
+        cbar.set_label('Danger Score\n(0=Extreme, 1=Safe)', fontsize=11, fontweight='bold')
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map.png', dpi=300, bbox_inches='tight')
@@ -517,11 +507,11 @@ class DangerMapper:
         
         ax.set_xlabel('X (landscape pixels)', fontsize=13, fontweight='bold')
         ax.set_ylabel('Y (landscape pixels)', fontsize=13, fontweight='bold')
-        ax.set_title('Fire Danger Map (Distance to Extreme Fire Envelope)',
+        ax.set_title('Fire Danger Map (CHE Occupancy)',
                     fontsize=15, fontweight='bold', pad=20)
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label('Danger Score\n(0.5=Extreme, 1.0=Safe)', fontsize=11, fontweight='bold')
+        cbar.set_label('Danger Score\n(0=Extreme, 1=Safe)', fontsize=11, fontweight='bold')
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map_only.png', dpi=300, bbox_inches='tight')
