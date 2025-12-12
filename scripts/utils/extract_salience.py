@@ -4,11 +4,12 @@ Extract Grad-CAM Salience to Parquet
 Stage 1 of hypervolume pipeline:
 - Run Grad-CAM on dataset batches
 - Extract top-percentile important pixels
+- Map GradCAM coordinates to FULL landscape (no interpolation)
 - Stream to Parquet files with environmental features
 - Track fire intensity quantiles for extreme fire filtering
 
 Usage:
-    python scripts/extract_salience.py \
+    python scripts/utils/extract_salience.py \
         --checkpoint checkpoints/dino_phase2_best.pt \
         --output data/salience \
         --num_samples 1000 \
@@ -43,6 +44,7 @@ def get_git_commit_hash():
         return 'unknown'
 
 from data import RawFireDataset
+from data.transforms import LandscapeNormalize
 from models.emberformer import EmberFormerDINO
 from scripts.archive.analyze_gradcam import GradCAM, load_model
 import torchvision.transforms.functional as TF
@@ -50,10 +52,12 @@ from torch.utils.data import DataLoader, Subset
 
 
 SCHEMA = pa.schema([
-    ('sample_id', pa.int32()),          # NEW: which sample in dataset
-    ('sequence_id', pa.string()),       # NEW: fire sequence ID
-    ('y', pa.int32()),                  # Y in resized 406×406 space
-    ('x', pa.int32()),                  # X in resized 406×406 space
+    ('sample_id', pa.int32()),          # which sample in dataset
+    ('sequence_id', pa.string()),       # fire sequence ID
+    ('y_cam', pa.int32()),              # Y in resized 406×406 space (GradCAM)
+    ('x_cam', pa.int32()),              # X in resized 406×406 space (GradCAM)
+    ('y_landscape', pa.int32()),        # Y in full landscape coordinates
+    ('x_landscape', pa.int32()),        # X in full landscape coordinates
     ('gradcam', pa.float32()),
     ('forest', pa.float32()),
     ('arqueo', pa.float32()),
@@ -77,12 +81,18 @@ STATIC_NAMES = [
 class SalienceExtractor:
     """Stream Grad-CAM salience pixels to Parquet with fire intensity tracking"""
     
-    def __init__(self, model, device='cuda', importance_threshold=99, buffer_size=1_000_000):
+    def __init__(self, model, full_landscape, spatial_indices, resize_to=406,
+                 device='cuda', importance_threshold=99, buffer_size=1_000_000):
         self.model = model
         self.device = device
         self.importance_threshold = importance_threshold
         self.buffer_size = buffer_size
+        self.resize_to = resize_to
         self.gradcam = GradCAM(model, model.refinement_decoder.output_conv)
+        
+        # Full landscape for feature extraction (normalized, [C, H, W])
+        self.full_landscape = full_landscape
+        self.spatial_indices = spatial_indices
         
         self.buffer = []
         self.part_idx = 0
@@ -100,8 +110,10 @@ class SalienceExtractor:
         table = pa.Table.from_pydict({
             'sample_id': pa.array([r['sample_id'] for r in self.buffer], type=pa.int32()),
             'sequence_id': pa.array([r['sequence_id'] for r in self.buffer], type=pa.string()),
-            'y': pa.array([r['y'] for r in self.buffer], type=pa.int32()),
-            'x': pa.array([r['x'] for r in self.buffer], type=pa.int32()),
+            'y_cam': pa.array([r['y_cam'] for r in self.buffer], type=pa.int32()),
+            'x_cam': pa.array([r['x_cam'] for r in self.buffer], type=pa.int32()),
+            'y_landscape': pa.array([r['y_landscape'] for r in self.buffer], type=pa.int32()),
+            'x_landscape': pa.array([r['x_landscape'] for r in self.buffer], type=pa.int32()),
             'gradcam': pa.array([r['gradcam'] for r in self.buffer], type=pa.float32()),
             'forest': pa.array([r['forest'] for r in self.buffer], type=pa.float32()),
             'arqueo': pa.array([r['arqueo'] for r in self.buffer], type=pa.float32()),
@@ -123,9 +135,34 @@ class SalienceExtractor:
         self.total_pixels += len(self.buffer)
         self.part_idx += 1
         self.buffer = []
+    
+    def cam_to_landscape_coords(self, y_cam, x_cam, sequence_id, crop_h, crop_w):
+        """
+        Map GradCAM coordinates (in 406x406 space) to full landscape coordinates.
+        
+        Args:
+            y_cam, x_cam: coordinates in resized GradCAM space (406x406)
+            sequence_id: fire sequence ID to look up crop bounds
+            crop_h, crop_w: original crop dimensions before resize
+        
+        Returns:
+            y_landscape, x_landscape: coordinates in full landscape
+        """
+        # Get crop bounds from spatial indices
+        y_start, y_end, x_start, x_end = self.spatial_indices[sequence_id]
+        
+        # Scale from 406x406 back to crop size, then offset to landscape
+        y_landscape = y_start + int(y_cam * crop_h / self.resize_to)
+        x_landscape = x_start + int(x_cam * crop_w / self.resize_to)
+        
+        # Clamp to valid range
+        y_landscape = min(y_landscape, y_end - 1)
+        x_landscape = min(x_landscape, x_end - 1)
+        
+        return y_landscape, x_landscape
         
     def extract_batch(self, batch_fire, batch_static, batch_wind, batch_target, batch_valid_t, batch_indices, dataset):
-        """Extract important pixels from a batch"""
+        """Extract important pixels from a batch, using FULL landscape for features"""
         B = batch_fire.shape[0]
         
         # Compute Grad-CAM for entire batch
@@ -142,6 +179,11 @@ class SalienceExtractor:
             sample_info = dataset.samples[sample_idx]
             sequence_id = sample_info['sequence_id']
             
+            # Get original crop size (before resize)
+            y_start, y_end, x_start, x_end = self.spatial_indices[sequence_id]
+            crop_h = y_end - y_start
+            crop_w = x_end - x_start
+            
             cam_np = cam[b].cpu().numpy()
             
             # Get important pixels (top percentile)
@@ -152,27 +194,34 @@ class SalienceExtractor:
             if len(y_coords) == 0:
                 continue
             
-            # Extract environmental data
-            static_np = batch_static[b].cpu().numpy()
+            # Get wind data (same for all pixels in sample)
             wind_np = batch_wind[b].cpu().numpy()
+            wind_speed = float(wind_np[-1, 0])
+            wind_direction = float(wind_np[-1, 1])
             
-            for y, x in zip(y_coords, x_coords):
+            for y_cam, x_cam in zip(y_coords, x_coords):
+                # Map to full landscape coordinates
+                y_land, x_land = self.cam_to_landscape_coords(
+                    y_cam, x_cam, sequence_id, crop_h, crop_w
+                )
+                
+                # Extract features from FULL landscape (no interpolation!)
                 row = {
                     'sample_id': int(sample_idx),
                     'sequence_id': str(sequence_id),
-                    'y': int(y),
-                    'x': int(x),
-                    'gradcam': float(cam_np[y, x]),
+                    'y_cam': int(y_cam),
+                    'x_cam': int(x_cam),
+                    'y_landscape': int(y_land),
+                    'x_landscape': int(x_land),
+                    'gradcam': float(cam_np[y_cam, x_cam]),
                     'fire_intensity': float(fire_intensity),
-                    'wind_speed': float(wind_np[-1, 0]),
-                    'wind_direction': float(wind_np[-1, 1]),
+                    'wind_speed': wind_speed,
+                    'wind_direction': wind_direction,
                 }
                 
-                # Add static features
-                for i, name in enumerate(STATIC_NAMES[:min(8, static_np.shape[0])]):
-                    if name in ['forest', 'arqueo', 'cbd', 'cbh', 
-                               'elevation', 'flora', 'paleo', 'urbana']:
-                        row[name] = float(static_np[i, y, x])
+                # Add static features from FULL LANDSCAPE
+                for i, name in enumerate(STATIC_NAMES):
+                    row[name] = float(self.full_landscape[i, y_land, x_land])
                 
                 self.buffer.append(row)
         
@@ -225,6 +274,7 @@ class SalienceExtractor:
         print(f"Extracting Salience: {len(dataset_subset)} samples (batch_size={batch_size})")
         print(f"Output: {output_dir}")
         print(f"Importance threshold: top {100-self.importance_threshold}%")
+        print(f"Feature extraction: FULL LANDSCAPE (no interpolation)")
         print(f"{'='*60}\n")
         
         # Process batches
@@ -297,6 +347,9 @@ def main():
     
     args = parser.parse_args()
     
+    # Expand data root path
+    data_root = Path(args.data_root).expanduser()
+    
     # Append git commit hash to output directory
     commit_hash = get_git_commit_hash()
     output_dir = Path(args.output) / commit_hash
@@ -311,8 +364,22 @@ def main():
     print(f"Loading model from {args.checkpoint}...")
     model = load_model(args.checkpoint, device=device)
     
-    # Load dataset
-    print(f"\nLoading dataset from {args.data_root}...")
+    # Load FULL landscape (normalized) for feature extraction
+    print(f"\nLoading full landscape from {data_root}...")
+    landscape_path = data_root / 'landscape' / 'Input_Geotiff.tif'
+    normalizer = LandscapeNormalize()
+    full_landscape = normalizer(str(landscape_path)).values.astype(np.float32)
+    print(f"  Landscape shape: {full_landscape.shape}")
+    print(f"  Unique forest values: {len(np.unique(full_landscape[0]))}")
+    
+    # Load spatial indices
+    indices_path = data_root / 'landscape' / 'indices.json'
+    with open(indices_path) as f:
+        spatial_indices = json.load(f)
+    print(f"  Loaded {len(spatial_indices)} spatial indices")
+    
+    # Load dataset (with resize transform for model input)
+    print(f"\nLoading dataset from {data_root}...")
     with open('configs/emberformer_dino.yaml', 'r') as f:
         cfg = yaml.safe_load(f)
     resize_to = cfg['data'].get('resize_to', 406)
@@ -326,7 +393,7 @@ def main():
                            antialias=True)
     
     transform = ResizeTransform(resize_to)
-    full_dataset = RawFireDataset(args.data_root, sequence_length=4, transform=transform)
+    full_dataset = RawFireDataset(str(data_root), sequence_length=4, transform=transform)
     
     # Split dataset
     total_samples = len(full_dataset.samples)
@@ -345,9 +412,12 @@ def main():
     print(f"Dataset split: {args.split}")
     print(f"Dataset size: {len(dataset)} samples")
     
-    # Extract salience
+    # Extract salience with FULL landscape features
     extractor = SalienceExtractor(
         model,
+        full_landscape=full_landscape,
+        spatial_indices=spatial_indices,
+        resize_to=resize_to,
         device=device,
         importance_threshold=args.importance_threshold,
         buffer_size=args.buffer_size

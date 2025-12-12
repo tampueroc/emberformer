@@ -135,13 +135,19 @@ class USpacePrep:
         # Stack into matrix
         X = np.column_stack([features[f] for f in feature_list])
         
-        # Keep metadata
+        # Keep metadata - support both old (y, x) and new (y_landscape, x_landscape) schemas
         metadata = {
             'gradcam': np.array(data['gradcam'], dtype=np.float32),
             'fire_intensity': np.array(data['fire_intensity'], dtype=np.float32),
-            'y': np.array(data['y'], dtype=np.int32),
-            'x': np.array(data['x'], dtype=np.int32),
         }
+        
+        # Use landscape coordinates if available, else fall back to cam coordinates
+        if 'y_landscape' in data:
+            metadata['y'] = np.array(data['y_landscape'], dtype=np.int32)
+            metadata['x'] = np.array(data['x_landscape'], dtype=np.int32)
+        else:
+            metadata['y'] = np.array(data['y'], dtype=np.int32)
+            metadata['x'] = np.array(data['x'], dtype=np.int32)
         
         self.feature_names = feature_list
         return X, metadata
