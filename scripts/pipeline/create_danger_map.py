@@ -29,8 +29,15 @@ import rasterio
 from matplotlib.colors import LinearSegmentedColormap
 import pandas as pd
 import sys
+import os
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add project root to path for imports
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+os.chdir(_project_root)
+
+from data.transforms import LandscapeNormalize
 
 
 def get_git_commit_hash():
@@ -43,9 +50,6 @@ def get_git_commit_hash():
         return result.stdout.strip()
     except Exception:
         return 'unknown'
-
-
-from data.transforms import LandscapeNormalize
 
 
 class DangerMapper:
@@ -216,8 +220,18 @@ class DangerMapper:
             i = np.clip(i, 0, self.occupancy_grid.shape[1] - 1)
             j = np.clip(j, 0, self.occupancy_grid.shape[0] - 1)
             return float(self.occupancy_grid[j, i])
+        elif n_dims == 3:
+            # 3D grid indexing
+            indices = []
+            for dim in range(3):
+                idx = int((U_check[dim] - self.envelope_bounds[0][dim]) / 
+                         (self.envelope_bounds[1][dim] - self.envelope_bounds[0][dim]) * 
+                         (self.occupancy_grid.shape[dim] - 1))
+                idx = np.clip(idx, 0, self.occupancy_grid.shape[dim] - 1)
+                indices.append(idx)
+            return float(self.occupancy_grid[indices[0], indices[1], indices[2]])
         else:
-            raise ValueError(f"Only 2D supported for now, got {n_dims}D")
+            raise ValueError(f"Only 2D and 3D supported, got {n_dims}D")
     
     def _check_inside_grid(self, U_check, n_dims, return_occupancy=False):
         """Helper to check if point is inside envelope using grid"""
