@@ -23,8 +23,17 @@ import argparse
 import json
 import subprocess
 from sklearn.preprocessing import StandardScaler
-from umap import UMAP
 from tqdm import tqdm
+
+# Try GPU UMAP first, fall back to CPU
+try:
+    from cuml.manifold import UMAP
+    UMAP_BACKEND = "gpu"
+    print("Using GPU UMAP (cuML)")
+except ImportError:
+    from umap import UMAP
+    UMAP_BACKEND = "cpu"
+    print("Using CPU UMAP (umap-learn)")
 
 
 def get_git_commit_hash():
@@ -156,22 +165,31 @@ class USpacePrepUMAP:
         
         n_components = min(self.max_components, X_scaled.shape[1])
         
-        self.umap = UMAP(
-            n_components=n_components,
-            n_neighbors=self.n_neighbors,
-            min_dist=self.min_dist,
-            metric=self.metric,
-            random_state=self.random_state,
-            verbose=True
-        )
-        
         print(f"\n  UMAP parameters:")
+        print(f"    backend: {UMAP_BACKEND}")
         print(f"    n_components: {n_components}")
         print(f"    n_neighbors: {self.n_neighbors}")
         print(f"    min_dist: {self.min_dist}")
         print(f"    metric: {self.metric}")
         
-        U = self.umap.fit_transform(X_scaled)
+        if UMAP_BACKEND == "gpu":
+            self.umap = UMAP(
+                n_components=n_components,
+                n_neighbors=self.n_neighbors,
+                min_dist=self.min_dist,
+                verbose=True
+            )
+            U = self.umap.fit_transform(X_scaled)
+        else:
+            self.umap = UMAP(
+                n_components=n_components,
+                n_neighbors=self.n_neighbors,
+                min_dist=self.min_dist,
+                metric=self.metric,
+                random_state=self.random_state,
+                verbose=True
+            )
+            U = self.umap.fit_transform(X_scaled)
         
         print(f"\n  ✓ UMAP complete:")
         print(f"    Output shape: {U.shape}")
