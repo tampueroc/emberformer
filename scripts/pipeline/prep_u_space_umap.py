@@ -22,6 +22,7 @@ from pathlib import Path
 import argparse
 import json
 import subprocess
+import pickle
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
@@ -226,6 +227,14 @@ class USpacePrepUMAP:
         with open(output_dir / 'transform.json', 'w') as f:
             json.dump(transform_meta, f, indent=2)
         
+        # Save fitted UMAP model for transform() on new data
+        with open(output_dir / 'umap_model.pkl', 'wb') as f:
+            pickle.dump(self.umap, f)
+        
+        # Save fitted scaler
+        with open(output_dir / 'scaler.pkl', 'wb') as f:
+            pickle.dump(self.scaler, f)
+        
         print(f"{'='*60}")
         print(f"✓ Saved U-space data (UMAP)")
         print(f"{'='*60}")
@@ -252,6 +261,8 @@ def main():
                        help='Number of neighbors for UMAP (default: 15)')
     parser.add_argument('--min_dist', type=float, default=0.1,
                        help='Minimum distance for UMAP (default: 0.1)')
+    parser.add_argument('--max_samples', type=int, default=None,
+                       help='Max samples for UMAP (subsample if exceeded)')
     
     args = parser.parse_args()
     

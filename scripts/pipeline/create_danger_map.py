@@ -30,6 +30,7 @@ from matplotlib.colors import LinearSegmentedColormap
 import pandas as pd
 import sys
 import os
+import pickle
 
 # Add project root to path for imports
 _project_root = str(Path(__file__).resolve().parent.parent.parent)
@@ -97,23 +98,34 @@ class DangerMapper:
             print(f"    Using raw mask as source of truth")
     
     def load_transformation(self, u_space_dir):
-        """Load PCA transformation metadata from prep_u_space stage"""
+        """Load transformation metadata from prep_u_space stage (PCA or UMAP)"""
         u_space_dir = Path(u_space_dir)
-        
-        print(f"\nLoading PCA transformation from {u_space_dir}...")
         
         with open(u_space_dir / 'transform.json', 'r') as f:
             self.transform_meta = json.load(f)
         
+        self.transform_method = self.transform_meta.get('method', 'pca')
         self.feature_names = self.transform_meta['feature_names']
-        self.scaler_mean = np.array(self.transform_meta['scaler_mean'])
-        self.scaler_std = np.array(self.transform_meta['scaler_std'])
-        self.pca_components = np.array(self.transform_meta['pca_components'])
         self.n_components = self.transform_meta['n_components']
         
-        print(f"  Features: {self.feature_names}")
-        print(f"  PCA components: {self.n_components}")
-        print(f"  Total variance: {self.transform_meta['total_variance']*100:.2f}%")
+        print(f"\nLoading {self.transform_method.upper()} transformation from {u_space_dir}...")
+        
+        if self.transform_method == 'umap':
+            # Load fitted UMAP model and scaler
+            with open(u_space_dir / 'umap_model.pkl', 'rb') as f:
+                self.umap_model = pickle.load(f)
+            with open(u_space_dir / 'scaler.pkl', 'rb') as f:
+                self.scaler = pickle.load(f)
+            print(f"  Features: {self.feature_names}")
+            print(f"  UMAP components: {self.n_components}")
+        else:
+            # PCA: load components for matrix multiplication
+            self.scaler_mean = np.array(self.transform_meta['scaler_mean'])
+            self.scaler_std = np.array(self.transform_meta['scaler_std'])
+            self.pca_components = np.array(self.transform_meta['pca_components'])
+            print(f"  Features: {self.feature_names}")
+            print(f"  PCA components: {self.n_components}")
+            print(f"  Total variance: {self.transform_meta['total_variance']*100:.2f}%")
     
     def load_envelope(self, che_dir):
         """Load CHE envelope from stage 3"""
@@ -177,14 +189,17 @@ class DangerMapper:
         return np.array(features, dtype=np.float32)
     
     def project_to_uspace(self, X):
-        """Project features to U-space using saved PCA (simple z-score)"""
-        # Simple Z-score normalize (matching training)
-        X_scaled = (X - self.scaler_mean) / (self.scaler_std + 1e-8)
-
-        # PCA projection
-        U = X_scaled @ self.pca_components.T
-
-        return U
+        """Project features to U-space using saved transformation (PCA or UMAP)"""
+        if self.transform_method == 'umap':
+            # UMAP: use fitted model's transform
+            X_scaled = self.scaler.transform(X.reshape(1, -1) if X.ndim == 1 else X)
+            U = self.umap_model.transform(X_scaled)
+            return U.flatten() if X.ndim == 1 else U
+        else:
+            # PCA: simple z-score + matrix multiplication
+            X_scaled = (X - self.scaler_mean) / (self.scaler_std + 1e-8)
+            U = X_scaled @ self.pca_components.T
+            return U
     
     def compute_distance_to_envelope(self, U):
         """
