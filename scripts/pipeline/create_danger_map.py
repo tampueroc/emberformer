@@ -40,6 +40,21 @@ os.chdir(_project_root)
 
 from data.transforms import LandscapeNormalize
 
+# Forest fuel type codes from spain_lookup_table.csv (39 categories)
+# Must match prep_u_space_umap.py exactly
+FOREST_CODES = np.array([
+    0, 91, 92, 93, 98, 99,  # Non-fuel (6)
+    101, 102, 103, 104, 105, 106, 107, 108,  # GR1-GR8 (8)
+    121, 122, 123, 124,  # GS1-GS4 (4)
+    142, 143, 144, 145, 146, 147, 148, 149,  # SH2-SH9 (8)
+    161, 162, 163, 164, 165,  # TU1-TU5 (5)
+    181, 182, 183, 185, 186, 188, 189,  # TL1-TL9 (7, some missing)
+], dtype=np.int32)
+N_FOREST_CATEGORIES = len(FOREST_CODES)  # 39
+
+# Build code to index mapping once
+FOREST_CODE_TO_IDX = {code: idx for idx, code in enumerate(FOREST_CODES)}
+
 
 def get_git_commit_hash():
     """Get short git commit hash for output directory naming"""
@@ -292,12 +307,43 @@ class DangerMapper:
         y_coords, x_coords = np.where(self.valid_mask)
         n_valid = len(y_coords)
         
-        # Extract all features at once (vectorized)
-        print(f"  Extracting features...")
-        X_all = np.zeros((n_valid, len(self.feature_names)), dtype=np.float32)
-        for i, feat_name in enumerate(self.feature_names):
-            if feat_name in band_idx:
-                X_all[:, i] = self.landscape[band_idx[feat_name], y_coords, x_coords]
+        # Extract and engineer features (with one-hot forest encoding)
+        print(f"  Extracting and encoding features...")
+        
+        # Check if using one-hot encoding (feature names start with 'forest_')
+        uses_onehot_forest = any(fn.startswith('forest_') for fn in self.feature_names)
+        
+        if uses_onehot_forest:
+            # One-hot encode forest from raw landscape (integer fuel codes)
+            forest_raw = self.landscape_raw[band_idx['forest'], y_coords, x_coords]
+            forest_codes = np.round(forest_raw).astype(np.int32)
+            
+            # Create one-hot encoding (vectorized)
+            forest_onehot = np.zeros((n_valid, N_FOREST_CATEGORIES), dtype=np.float32)
+            for code, idx in FOREST_CODE_TO_IDX.items():
+                mask = forest_codes == code
+                forest_onehot[mask, idx] = 1.0
+            
+            # Build feature matrix in correct order
+            feature_arrays = [forest_onehot]
+            
+            # Add continuous features in order
+            for feat_name in self.feature_names:
+                if feat_name.startswith('forest_'):
+                    continue  # Already handled
+                if feat_name in band_idx:
+                    feat_vals = self.landscape[band_idx[feat_name], y_coords, x_coords]
+                    feature_arrays.append(feat_vals.reshape(-1, 1))
+            
+            X_all = np.hstack(feature_arrays)
+            print(f"    One-hot forest: {N_FOREST_CATEGORIES} categories")
+            print(f"    Feature matrix shape: {X_all.shape}")
+        else:
+            # Legacy: direct feature extraction
+            X_all = np.zeros((n_valid, len(self.feature_names)), dtype=np.float32)
+            for i, feat_name in enumerate(self.feature_names):
+                if feat_name in band_idx:
+                    X_all[:, i] = self.landscape[band_idx[feat_name], y_coords, x_coords]
         
         # Project all to U-space in batch
         print(f"  Projecting to U-space (batch)...")
