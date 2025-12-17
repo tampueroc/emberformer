@@ -24,6 +24,7 @@ import json
 import subprocess
 import pickle
 from tqdm import tqdm
+from sklearn.preprocessing import StandardScaler
 
 # Forest fuel type codes from spain_lookup_table.csv (38 categories)
 # These are the raw integer codes before normalization
@@ -131,6 +132,7 @@ class USpacePrepUMAP:
         self.min_feature_std = min_feature_std
         self.batch_size = batch_size
         self.umap = None
+        self.scaler = None
         self.feature_names = None
 
     def load_extreme_fires(self, salience_dir, extreme_threshold=99):
@@ -257,15 +259,21 @@ class USpacePrepUMAP:
         return X, metadata
 
     def fit_transform(self, X):
-        """UMAP projection with batch transform for memory efficiency"""
+        """UMAP projection with standardization and batch transform"""
         print(f"\n{'='*60}")
-        print(f"UMAP Transformation (batch processing)")
+        print(f"UMAP Transformation (standardized features)")
         print(f"{'='*60}")
         print(f"Input shape: {X.shape}")
         print(f"Batch size: {self.batch_size:,}")
-        print(f"Feature ranges:")
+        print(f"Feature ranges (before standardization):")
         for i, name in enumerate(self.feature_names):
             print(f"    {name}: [{X[:,i].min():.3f}, {X[:,i].max():.3f}]")
+
+        # Standardize features (z-score) so all contribute equally
+        print(f"\n  Standardizing features (z-score)...")
+        self.scaler = StandardScaler()
+        X_scaled = self.scaler.fit_transform(X)
+        print(f"    Scaled ranges: [{X_scaled.min():.2f}, {X_scaled.max():.2f}]")
 
         n_components = min(self.max_components, X.shape[1])
         n_samples = X.shape[0]
@@ -297,7 +305,7 @@ class USpacePrepUMAP:
         if UMAP_BACKEND == "gpu":
             # GPU: use fit_transform directly (more stable with cuML)
             print(f"\n  GPU fit_transform on {n_samples:,} samples...")
-            U = self.umap.fit_transform(X)
+            U = self.umap.fit_transform(X_scaled)
         else:
             # CPU: fit then batch transform for memory efficiency
             print(f"\n  Fitting UMAP on {n_samples:,} samples...")
@@ -349,11 +357,16 @@ class USpacePrepUMAP:
         with open(output_dir / 'umap_model.pkl', 'wb') as f:
             pickle.dump(self.umap, f)
 
+        # Save fitted scaler for consistent preprocessing
+        with open(output_dir / 'scaler.pkl', 'wb') as f:
+            pickle.dump(self.scaler, f)
+
         print(f"{'='*60}")
         print(f"✓ Saved U-space data (UMAP)")
         print(f"{'='*60}")
         print(f"  {output_dir}/extreme.npz ({U.shape[0]:,} points × {U.shape[1]} dims)")
         print(f"  {output_dir}/transform.json (UMAP metadata)")
+        print(f"  {output_dir}/scaler.pkl (StandardScaler)")
         print(f"{'='*60}\n")
 
 

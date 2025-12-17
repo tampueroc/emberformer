@@ -134,9 +134,17 @@ class DangerMapper:
         print(f"\nLoading {self.transform_method.upper()} transformation from {u_space_dir}...")
         
         if self.transform_method == 'umap':
-            # Load fitted UMAP model (no scaler - uses raw features)
+            # Load fitted UMAP model and scaler
             with open(u_space_dir / 'umap_model.pkl', 'rb') as f:
                 self.umap_model = pickle.load(f)
+            # Load scaler for standardization before UMAP
+            scaler_path = u_space_dir / 'scaler.pkl'
+            if scaler_path.exists():
+                with open(scaler_path, 'rb') as f:
+                    self.umap_scaler = pickle.load(f)
+                print(f"  Scaler: StandardScaler loaded")
+            else:
+                self.umap_scaler = None
             print(f"  Features: {self.feature_names}")
             print(f"  UMAP components: {self.n_components}")
         elif self.transform_method == 'direct':
@@ -361,7 +369,13 @@ class DangerMapper:
         # Project all to U-space in batch
         print(f"  Projecting to U-space (batch)...")
         if self.transform_method == 'umap':
-            U_all = self.umap_model.transform(X_all)
+            # Apply scaler if available (standardization before UMAP)
+            if hasattr(self, 'umap_scaler') and self.umap_scaler is not None:
+                print(f"    Applying StandardScaler...")
+                X_scaled = self.umap_scaler.transform(X_all)
+                U_all = self.umap_model.transform(X_scaled)
+            else:
+                U_all = self.umap_model.transform(X_all)
         else:
             U_all = self.project_to_uspace(X_all)
         
