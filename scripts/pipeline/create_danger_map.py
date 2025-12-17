@@ -296,30 +296,39 @@ class DangerMapper:
             print(f"  Total variance: {self.transform_meta['total_variance']*100:.2f}%")
     
     def load_envelope(self, che_dir):
-        """Load convex hull envelope from stage 3"""
+        """Load convex hull envelope from CHE ensemble"""
         che_dir = Path(che_dir)
         
-        print(f"\nLoading convex hull envelope from {che_dir}...")
+        print(f"\nLoading CHE ensemble from {che_dir}...")
         
-        # Load envelope data
-        envelope_data = np.load(che_dir / 'envelope.npz')
-        hull_points = envelope_data['hull_points']
-        hull_vertices = envelope_data['hull_vertices']
-        self.envelope_bounds = envelope_data['bounds']
-        self.n_dims = int(envelope_data['n_dims'])
+        # Load CHE ensemble data
+        che_data = np.load(che_dir / 'che_ensemble.npz')
+        vertices_concat = che_data['vertices_concat']
+        offsets = che_data['offsets']
+        self.n_dims = int(che_data['n_dims'])
+        n_bootstraps = int(che_data['n_bootstraps'])
+        
+        # For now, use first hull for membership test (TODO: occupancy-based)
+        # Extract first hull's vertices
+        first_hull_verts = vertices_concat[offsets[0]:offsets[1]]
         
         # Reconstruct Delaunay for point-in-hull queries
         from scipy.spatial import Delaunay, ConvexHull, cKDTree
-        self.delaunay = Delaunay(hull_points[hull_vertices])
+        self.delaunay = Delaunay(first_hull_verts)
+        
+        # Store all hull vertices for potential occupancy computation
+        self.all_hull_vertices = []
+        for i in range(n_bootstraps):
+            self.all_hull_vertices.append(vertices_concat[offsets[i]:offsets[i+1]])
         
         # For 3D: build acceleration structure for surface distance
         self.tri_tree = None
         self.tri_verts = None
         if self.n_dims == 3:
-            U3 = hull_points[:, :3]
-            self.hull3 = ConvexHull(U3, qhull_options='QJ')
+            # Build hull from first bootstrap's vertices
+            self.hull3 = ConvexHull(first_hull_verts, qhull_options='QJ')
             simplices = self.hull3.simplices  # [T, 3] triangle vertex indices
-            self.tri_verts = U3[simplices]  # [T, 3, 3] triangle vertex coords
+            self.tri_verts = first_hull_verts[simplices]  # [T, 3, 3] triangle vertex coords
             
             # Build KDTree on triangle centroids for fast nearest-triangle lookup
             centroids = self.tri_verts.mean(axis=1)  # [T, 3]
@@ -332,8 +341,9 @@ class DangerMapper:
             che_summary = json.load(f)
         
         print(f"  Method: {che_summary['method']}")
-        print(f"  Vertices: {che_summary['n_vertices']:,}")
-        print(f"  Volume: {che_summary['volume']:.2e}")
+        print(f"  Bootstraps: {n_bootstraps}")
+        print(f"  Mean vertices: {che_summary['vertices_mean']:.1f}")
+        print(f"  Mean volume: {che_summary['volume_mean']:.2e}")
         print(f"  Dimensions: {self.n_dims}")
     
     def engineer_pixel_features(self, pixel_features):
