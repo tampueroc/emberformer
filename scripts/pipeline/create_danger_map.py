@@ -286,55 +286,65 @@ class DangerMapper:
             'urbana': 7,
         }
         
-        # Store raw features for pixels inside danger zone
-        danger_pixel_data = []
-        
         # Process only valid pixels (where elevation is valid)
         print(f"  Processing {self.valid_mask.sum():,} valid pixels...")
         
         y_coords, x_coords = np.where(self.valid_mask)
-        for idx in tqdm(range(len(y_coords)), desc="Computing danger scores"):
+        n_valid = len(y_coords)
+        
+        # Extract all features at once (vectorized)
+        print(f"  Extracting features...")
+        X_all = np.zeros((n_valid, len(self.feature_names)), dtype=np.float32)
+        for i, feat_name in enumerate(self.feature_names):
+            if feat_name in band_idx:
+                X_all[:, i] = self.landscape[band_idx[feat_name], y_coords, x_coords]
+        
+        # Project all to U-space in batch
+        print(f"  Projecting to U-space (batch)...")
+        if self.transform_method == 'umap':
+            U_all = self.umap_model.transform(X_all)
+        else:
+            U_all = self.project_to_uspace(X_all)
+        
+        # Check inside/outside hull in batch
+        print(f"  Computing danger scores (batch)...")
+        inside_mask = self.delaunay.find_simplex(U_all[:, :self.n_dims]) >= 0
+        
+        # For inside: score = 0.5
+        # For outside: compute distance-based score
+        danger_scores = np.ones(n_valid, dtype=np.float32)
+        danger_scores[inside_mask] = 0.5
+        
+        # Distance computation for outside points
+        outside_indices = np.where(~inside_mask)[0]
+        if len(outside_indices) > 0:
+            from scipy.spatial import distance
+            hull_points = self.delaunay.points
+            for idx in tqdm(outside_indices, desc="Computing distances for outside points"):
+                U_check = U_all[idx, :self.n_dims]
+                dist = distance.cdist([U_check], hull_points, 'euclidean')[0].min()
+                max_distance = 5.0
+                normalized = min(dist / max_distance, 1.0)
+                danger_scores[idx] = 0.5 + 0.5 * normalized
+        
+        # Fill danger grid
+        danger_grid[y_coords, x_coords] = danger_scores
+        
+        # Collect dangerous pixel data
+        danger_pixel_data = []
+        danger_indices = np.where(inside_mask)[0]
+        for idx in danger_indices:
             y, x = y_coords[idx], x_coords[idx]
-            
-            # Extract environmental features for this pixel (LANDSCAPE ONLY, no wind)
-            pixel_features = {
-                'forest': self.landscape[band_idx['forest'], y, x],
-                'arqueo': self.landscape[band_idx['arqueo'], y, x],
-                'cbd': self.landscape[band_idx['cbd'], y, x],
-                'cbh': self.landscape[band_idx['cbh'], y, x],
-                'elevation': self.landscape[band_idx['elevation'], y, x],
-                'flora': self.landscape[band_idx['flora'], y, x],
-                'paleo': self.landscape[band_idx['paleo'], y, x],
-                'urbana': self.landscape[band_idx['urbana'], y, x],
+            danger_record = {
+                'y': int(y),
+                'x': int(x),
+                'forest': float(self.landscape[band_idx['forest'], y, x]),
+                'cbd': float(self.landscape[band_idx['cbd'], y, x]),
+                'cbh': float(self.landscape[band_idx['cbh'], y, x]),
+                'elevation': float(self.landscape[band_idx['elevation'], y, x]),
+                'danger_score': 0.5,
             }
-            
-            # Engineer features
-            X = self.engineer_pixel_features(pixel_features)
-            
-            # Project to U-space
-            U = self.project_to_uspace(X)
-            
-            # Binary classification: 0.5 = dangerous (inside), 1.0 = safe (outside)
-            danger_score = self.compute_danger_score(U)
-            
-            danger_grid[y, x] = danger_score
-            
-            # Save dangerous pixels (inside envelope)
-            if danger_score == 0.5:
-                danger_record = {
-                    'y': int(y),
-                    'x': int(x),
-                    'forest': float(pixel_features['forest']),
-                    'arqueo': float(pixel_features['arqueo']),
-                    'cbd': float(pixel_features['cbd']),
-                    'cbh': float(pixel_features['cbh']),
-                    'elevation': float(pixel_features['elevation']),
-                    'flora': float(pixel_features['flora']),
-                    'paleo': float(pixel_features['paleo']),
-                    'urbana': float(pixel_features['urbana']),
-                    'danger_score': float(danger_score),
-                }
-                danger_pixel_data.append(danger_record)
+            danger_pixel_data.append(danger_record)
         
         # Statistics
         valid_danger = danger_grid[~np.isnan(danger_grid)]
