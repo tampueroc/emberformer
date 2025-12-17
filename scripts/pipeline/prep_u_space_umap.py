@@ -274,19 +274,23 @@ class USpacePrepUMAP:
                 verbose=True
             )
 
-        # Fit on full dataset
-        print(f"\n  Fitting UMAP on {n_samples:,} samples...")
-        self.umap.fit(X)
+        if UMAP_BACKEND == "gpu":
+            # GPU: use fit_transform directly (more stable with cuML)
+            print(f"\n  GPU fit_transform on {n_samples:,} samples...")
+            U = self.umap.fit_transform(X)
+        else:
+            # CPU: fit then batch transform for memory efficiency
+            print(f"\n  Fitting UMAP on {n_samples:,} samples...")
+            self.umap.fit(X)
 
-        # Transform in batches for memory efficiency
-        print(f"  Transforming in batches of {self.batch_size:,}...")
-        U = np.zeros((n_samples, n_components), dtype=np.float32)
-        
-        n_batches = (n_samples + self.batch_size - 1) // self.batch_size
-        for i in tqdm(range(n_batches), desc="Batch transform"):
-            start = i * self.batch_size
-            end = min(start + self.batch_size, n_samples)
-            U[start:end] = self.umap.transform(X[start:end])
+            print(f"  Transforming in batches of {self.batch_size:,}...")
+            U = np.zeros((n_samples, n_components), dtype=np.float32)
+            
+            n_batches = (n_samples + self.batch_size - 1) // self.batch_size
+            for i in tqdm(range(n_batches), desc="Batch transform"):
+                start = i * self.batch_size
+                end = min(start + self.batch_size, n_samples)
+                U[start:end] = self.umap.transform(X[start:end])
 
         print(f"\n  ✓ UMAP complete:")
         print(f"    Output shape: {U.shape}")
