@@ -103,13 +103,15 @@ class USpacePrepUMAP:
     """Prepare U-space from salience data using UMAP"""
 
     def __init__(self, max_components=3, n_neighbors=15, min_dist=0.1,
-                 metric='jaccard', random_state=42, min_feature_std=0.01):
+                 metric='jaccard', random_state=42, min_feature_std=0.01,
+                 batch_size=10000):
         self.max_components = max_components
         self.n_neighbors = n_neighbors
         self.min_dist = min_dist
         self.metric = metric
         self.random_state = random_state
         self.min_feature_std = min_feature_std
+        self.batch_size = batch_size
         self.umap = None
         self.feature_names = None
 
@@ -235,16 +237,18 @@ class USpacePrepUMAP:
         return X, metadata
 
     def fit_transform(self, X):
-        """UMAP projection on raw features (no scaling)"""
+        """UMAP projection with batch transform for memory efficiency"""
         print(f"\n{'='*60}")
-        print(f"UMAP Transformation (raw features)")
+        print(f"UMAP Transformation (batch processing)")
         print(f"{'='*60}")
         print(f"Input shape: {X.shape}")
+        print(f"Batch size: {self.batch_size:,}")
         print(f"Feature ranges:")
         for i, name in enumerate(self.feature_names):
             print(f"    {name}: [{X[:,i].min():.3f}, {X[:,i].max():.3f}]")
 
         n_components = min(self.max_components, X.shape[1])
+        n_samples = X.shape[0]
 
         print(f"\n  UMAP parameters:")
         print(f"    backend: {UMAP_BACKEND}")
@@ -260,7 +264,6 @@ class USpacePrepUMAP:
                 min_dist=self.min_dist,
                 verbose=True
             )
-            U = self.umap.fit_transform(X)
         else:
             self.umap = UMAP(
                 n_components=n_components,
@@ -270,7 +273,20 @@ class USpacePrepUMAP:
                 random_state=self.random_state,
                 verbose=True
             )
-            U = self.umap.fit_transform(X)
+
+        # Fit on full dataset
+        print(f"\n  Fitting UMAP on {n_samples:,} samples...")
+        self.umap.fit(X)
+
+        # Transform in batches for memory efficiency
+        print(f"  Transforming in batches of {self.batch_size:,}...")
+        U = np.zeros((n_samples, n_components), dtype=np.float32)
+        
+        n_batches = (n_samples + self.batch_size - 1) // self.batch_size
+        for i in tqdm(range(n_batches), desc="Batch transform"):
+            start = i * self.batch_size
+            end = min(start + self.batch_size, n_samples)
+            U[start:end] = self.umap.transform(X[start:end])
 
         print(f"\n  ✓ UMAP complete:")
         print(f"    Output shape: {U.shape}")
@@ -337,6 +353,8 @@ def main():
                        help='Minimum distance for UMAP (default: 0.1)')
     parser.add_argument('--metric', type=str, default='jaccard',
                        help='Distance metric for UMAP (default: jaccard, good for one-hot)')
+    parser.add_argument('--batch_size', type=int, default=10000,
+                       help='Batch size for UMAP transform (default: 10000)')
     parser.add_argument('--include_wind', action='store_true',
                        help='Include wind speed and direction (circular encoding)')
 
@@ -352,7 +370,8 @@ def main():
         n_neighbors=args.n_neighbors,
         min_dist=args.min_dist,
         metric=args.metric,
-        min_feature_std=args.min_feature_std
+        min_feature_std=args.min_feature_std,
+        batch_size=args.batch_size
     )
 
     data = prep.load_extreme_fires(args.input, args.extreme_threshold)
