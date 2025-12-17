@@ -235,7 +235,7 @@ class USpacePrepUMAP:
             print(f"  ✓ wind_speed: {wind_speed.shape[0]:,} values")
             print(f"  ✓ wind_dir_sin/cos: circular encoding")
         elif 'wind_speed' in data:
-            print(f"  ⊗ wind: excluded (use --include_wind to enable)")
+            print(f"  ⊗ wind: excluded (use without --exclude_wind to enable)")
 
         print(f"\nTotal features: {len(feature_list)}")
         print(f"  (39 forest one-hot + 3 continuous = 42 base features)")
@@ -392,8 +392,8 @@ def main():
                        help='Distance metric for UMAP (default: euclidean)')
     parser.add_argument('--batch_size', type=int, default=10000,
                        help='Batch size for UMAP transform (default: 10000)')
-    parser.add_argument('--include_wind', action='store_true',
-                       help='Include wind speed and direction (circular encoding)')
+    parser.add_argument('--exclude_wind', action='store_true',
+                       help='Exclude wind speed and direction (included by default)')
 
     args = parser.parse_args()
 
@@ -412,7 +412,7 @@ def main():
     )
 
     data = prep.load_extreme_fires(args.input, args.extreme_threshold)
-    X, metadata = prep.engineer_features(data, include_wind=args.include_wind)
+    X, metadata = prep.engineer_features(data, include_wind=not args.exclude_wind)
     U = prep.fit_transform(X)
     prep.save(U, metadata, output_dir)
 
