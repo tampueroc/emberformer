@@ -103,7 +103,7 @@ class USpacePrepUMAP:
     """Prepare U-space from salience data using UMAP"""
 
     def __init__(self, max_components=3, n_neighbors=15, min_dist=0.1,
-                 metric='euclidean', random_state=42, min_feature_std=0.01):
+                 metric='jaccard', random_state=42, min_feature_std=0.01):
         self.max_components = max_components
         self.n_neighbors = n_neighbors
         self.min_dist = min_dist
@@ -335,8 +335,8 @@ def main():
                        help='Number of neighbors for UMAP (default: 15)')
     parser.add_argument('--min_dist', type=float, default=0.1,
                        help='Minimum distance for UMAP (default: 0.1)')
-    parser.add_argument('--max_samples', type=int, default=None,
-                       help='Max samples for UMAP (subsample if exceeded)')
+    parser.add_argument('--metric', type=str, default='jaccard',
+                       help='Distance metric for UMAP (default: jaccard, good for one-hot)')
     parser.add_argument('--include_wind', action='store_true',
                        help='Include wind speed and direction (circular encoding)')
 
@@ -351,6 +351,7 @@ def main():
         max_components=args.max_components,
         n_neighbors=args.n_neighbors,
         min_dist=args.min_dist,
+        metric=args.metric,
         min_feature_std=args.min_feature_std
     )
 
