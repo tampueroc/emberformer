@@ -63,6 +63,139 @@ FEATURE_RANGES = {
     'elevation': (345.9422, 3012.5251),
 }
 
+# Number of nearest triangles to check for surface distance (3D only)
+K_NEAREST_TRIS = 32
+
+
+def point_triangle_distance_batch(points, triangles):
+    """
+    Compute minimum distance from each point to its set of candidate triangles.
+    
+    Uses the closest-point-on-triangle algorithm (Ericson, Real-Time Collision Detection).
+    
+    Args:
+        points: [M, 3] array of query points
+        triangles: [M, K, 3, 3] array of K candidate triangles per point
+                   Each triangle has 3 vertices of 3 coordinates
+    
+    Returns:
+        distances: [M] array of minimum distances to any triangle
+    """
+    M, K, _, _ = triangles.shape
+    
+    # Reshape for vectorized computation: [M*K, 3, 3]
+    tri_flat = triangles.reshape(M * K, 3, 3)
+    # Repeat points K times: [M*K, 3]
+    pts_flat = np.repeat(points, K, axis=0)
+    
+    # Triangle vertices
+    a = tri_flat[:, 0, :]  # [M*K, 3]
+    b = tri_flat[:, 1, :]
+    c = tri_flat[:, 2, :]
+    p = pts_flat
+    
+    # Compute closest point on each triangle
+    ab = b - a
+    ac = c - a
+    ap = p - a
+    
+    # Barycentric coordinates
+    d1 = np.sum(ab * ap, axis=1)  # [M*K]
+    d2 = np.sum(ac * ap, axis=1)
+    d3 = np.sum(ab * ab, axis=1)
+    d4 = np.sum(ab * ac, axis=1)
+    d5 = np.sum(ac * ac, axis=1)
+    
+    bp = p - b
+    d6 = np.sum(ab * bp, axis=1)
+    d7 = np.sum(ac * bp, axis=1)
+    
+    cp = p - c
+    d8 = np.sum(ab * cp, axis=1)
+    d9 = np.sum(ac * cp, axis=1)
+    
+    # Check if P in vertex region outside A
+    va = d1 <= 0
+    vb = d2 <= 0
+    region_a = va & vb
+    
+    # Check if P in edge region AB
+    vc = d6 >= 0
+    vd = d1 >= 0
+    ve = d1 * d7 - d6 * d2 <= 0
+    region_ab = vd & vc & ve & ~region_a
+    
+    # Check if P in vertex region outside B
+    vf = d6 >= 0
+    vg = d7 <= 0
+    region_b = vf & vg & ~region_a & ~region_ab
+    
+    # Check if P in edge region BC
+    vh = d8 <= 0
+    vi = d9 >= 0
+    vj = d6 * d9 - d8 * d7 >= 0
+    region_bc = vi & vh & vj & ~region_a & ~region_ab & ~region_b
+    
+    # Check if P in vertex region outside C
+    vk = d8 <= 0
+    vl = d9 >= d5
+    region_c = vk & vl & ~region_a & ~region_ab & ~region_b & ~region_bc
+    
+    # Check if P in edge region AC
+    vm = d2 >= 0
+    vn = d9 <= 0
+    vo = d4 * d2 - d1 * d5 <= 0
+    region_ac = vm & vn & vo & ~region_a & ~region_ab & ~region_b & ~region_bc & ~region_c
+    
+    # Otherwise P is inside face region
+    region_face = ~(region_a | region_ab | region_b | region_bc | region_c | region_ac)
+    
+    # Compute closest points for each region
+    closest = np.zeros_like(p)
+    
+    # Region A: closest is vertex A
+    closest[region_a] = a[region_a]
+    
+    # Region B: closest is vertex B
+    closest[region_b] = b[region_b]
+    
+    # Region C: closest is vertex C
+    closest[region_c] = c[region_c]
+    
+    # Region AB: project onto edge AB
+    t_ab = np.clip(d1 / (d3 + 1e-10), 0, 1)
+    closest_ab = a + t_ab[:, None] * ab
+    closest[region_ab] = closest_ab[region_ab]
+    
+    # Region BC: project onto edge BC
+    bc = c - b
+    t_bc = np.clip(np.sum((p - b) * bc, axis=1) / (np.sum(bc * bc, axis=1) + 1e-10), 0, 1)
+    closest_bc = b + t_bc[:, None] * bc
+    closest[region_bc] = closest_bc[region_bc]
+    
+    # Region AC: project onto edge AC
+    t_ac = np.clip(d2 / (d5 + 1e-10), 0, 1)
+    closest_ac = a + t_ac[:, None] * ac
+    closest[region_ac] = closest_ac[region_ac]
+    
+    # Region face: project onto plane
+    denom = d3 * d5 - d4 * d4 + 1e-10
+    v_bary = (d4 * d2 - d5 * d1) / denom
+    w_bary = (d4 * d1 - d3 * d2) / denom
+    v_bary = np.clip(v_bary, 0, 1)
+    w_bary = np.clip(w_bary, 0, 1)
+    closest_face = a + v_bary[:, None] * ab + w_bary[:, None] * ac
+    closest[region_face] = closest_face[region_face]
+    
+    # Compute distances
+    dist_flat = np.linalg.norm(p - closest, axis=1)  # [M*K]
+    
+    # Reshape and take minimum over K triangles
+    dist_per_tri = dist_flat.reshape(M, K)
+    min_dist = dist_per_tri.min(axis=1)  # [M]
+    
+    return min_dist
+
 
 def get_git_commit_hash():
     """Get short git commit hash for output directory naming"""
@@ -176,8 +309,23 @@ class DangerMapper:
         self.n_dims = int(envelope_data['n_dims'])
         
         # Reconstruct Delaunay for point-in-hull queries
-        from scipy.spatial import Delaunay
+        from scipy.spatial import Delaunay, ConvexHull, cKDTree
         self.delaunay = Delaunay(hull_points[hull_vertices])
+        
+        # For 3D: build acceleration structure for surface distance
+        self.tri_tree = None
+        self.tri_verts = None
+        if self.n_dims == 3:
+            U3 = hull_points[:, :3]
+            self.hull3 = ConvexHull(U3, qhull_options='QJ')
+            simplices = self.hull3.simplices  # [T, 3] triangle vertex indices
+            self.tri_verts = U3[simplices]  # [T, 3, 3] triangle vertex coords
+            
+            # Build KDTree on triangle centroids for fast nearest-triangle lookup
+            centroids = self.tri_verts.mean(axis=1)  # [T, 3]
+            self.tri_tree = cKDTree(centroids)
+            
+            print(f"  3D surface distance: {len(simplices)} triangles, KDTree built")
         
         # Load summary
         with open(che_dir / 'summary.json', 'r') as f:
@@ -390,15 +538,35 @@ class DangerMapper:
         
         # Distance computation for outside points
         outside_indices = np.where(~inside_mask)[0]
+        max_distance = 5.0
+        
         if len(outside_indices) > 0:
-            from scipy.spatial import distance
-            hull_points = self.delaunay.points
-            for idx in tqdm(outside_indices, desc="Computing distances for outside points"):
-                U_check = U_all[idx, :self.n_dims]
-                dist = distance.cdist([U_check], hull_points, 'euclidean')[0].min()
-                max_distance = 5.0
-                normalized = min(dist / max_distance, 1.0)
-                danger_scores[idx] = 0.5 + 0.5 * normalized
+            U_outside = U_all[outside_indices, :self.n_dims]
+            
+            if self.n_dims == 3 and self.tri_tree is not None:
+                # 3D: use exact distance to hull surface (triangle mesh)
+                print(f"  Computing 3D surface distances for {len(outside_indices):,} outside points...")
+                
+                # Query K nearest triangles for each outside point
+                _, tri_indices = self.tri_tree.query(U_outside, k=K_NEAREST_TRIS)
+                
+                # Get candidate triangles for each point: [M, K, 3, 3]
+                candidate_tris = self.tri_verts[tri_indices]
+                
+                # Compute exact distance to nearest triangle surface
+                distances = point_triangle_distance_batch(U_outside, candidate_tris)
+                
+                normalized = np.clip(distances / max_distance, 0.0, 1.0)
+                danger_scores[outside_indices] = 0.5 + 0.5 * normalized
+            else:
+                # Non-3D: fall back to distance to nearest vertex
+                from scipy.spatial import distance
+                hull_points = self.delaunay.points
+                for idx in tqdm(outside_indices, desc="Computing distances for outside points"):
+                    U_check = U_all[idx, :self.n_dims]
+                    dist = distance.cdist([U_check], hull_points, 'euclidean')[0].min()
+                    normalized = min(dist / max_distance, 1.0)
+                    danger_scores[idx] = 0.5 + 0.5 * normalized
         
         # Fill danger grid
         danger_grid[y_coords, x_coords] = danger_scores
