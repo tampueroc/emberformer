@@ -111,11 +111,9 @@ class DangerMapper:
         print(f"\nLoading {self.transform_method.upper()} transformation from {u_space_dir}...")
         
         if self.transform_method == 'umap':
-            # Load fitted UMAP model and scaler
+            # Load fitted UMAP model (no scaler - uses raw features)
             with open(u_space_dir / 'umap_model.pkl', 'rb') as f:
                 self.umap_model = pickle.load(f)
-            with open(u_space_dir / 'scaler.pkl', 'rb') as f:
-                self.scaler = pickle.load(f)
             print(f"  Features: {self.feature_names}")
             print(f"  UMAP components: {self.n_components}")
         elif self.transform_method == 'direct':
@@ -197,9 +195,9 @@ class DangerMapper:
     def project_to_uspace(self, X):
         """Project features to U-space using saved transformation (PCA or UMAP)"""
         if self.transform_method == 'umap':
-            # UMAP: use fitted model's transform
-            X_scaled = self.scaler.transform(X.reshape(1, -1) if X.ndim == 1 else X)
-            U = self.umap_model.transform(X_scaled)
+            # UMAP: use fitted model's transform on raw features
+            X_input = X.reshape(1, -1) if X.ndim == 1 else X
+            U = self.umap_model.transform(X_input)
             return U.flatten() if X.ndim == 1 else U
         elif self.transform_method == 'direct':
             # Direct: just z-score normalize using fitted scaler

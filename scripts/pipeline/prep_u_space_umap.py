@@ -23,7 +23,6 @@ import argparse
 import json
 import subprocess
 import pickle
-from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
 # Try GPU UMAP first, fall back to CPU
@@ -60,7 +59,6 @@ class USpacePrepUMAP:
         self.metric = metric
         self.random_state = random_state
         self.min_feature_std = min_feature_std
-        self.scaler = None
         self.umap = None
         self.feature_names = None
         
@@ -167,17 +165,16 @@ class USpacePrepUMAP:
         return X, metadata
     
     def fit_transform(self, X):
-        """Z-score normalization + UMAP projection"""
+        """UMAP projection on raw features (no scaling)"""
         print(f"\n{'='*60}")
-        print(f"UMAP Transformation")
+        print(f"UMAP Transformation (raw features)")
         print(f"{'='*60}")
         print(f"Input shape: {X.shape}")
-
-        self.scaler = StandardScaler()
-        X_scaled = self.scaler.fit_transform(X)
-        print(f"  ✓ Z-score normalized (mean=0, std=1)")
+        print(f"Feature ranges:")
+        for i, name in enumerate(self.feature_names):
+            print(f"    {name}: [{X[:,i].min():.3f}, {X[:,i].max():.3f}]")
         
-        n_components = min(self.max_components, X_scaled.shape[1])
+        n_components = min(self.max_components, X.shape[1])
         
         print(f"\n  UMAP parameters:")
         print(f"    backend: {UMAP_BACKEND}")
@@ -193,7 +190,7 @@ class USpacePrepUMAP:
                 min_dist=self.min_dist,
                 verbose=True
             )
-            U = self.umap.fit_transform(X_scaled)
+            U = self.umap.fit_transform(X)
         else:
             self.umap = UMAP(
                 n_components=n_components,
@@ -203,7 +200,7 @@ class USpacePrepUMAP:
                 random_state=self.random_state,
                 verbose=True
             )
-            U = self.umap.fit_transform(X_scaled)
+            U = self.umap.fit_transform(X)
         
         print(f"\n  ✓ UMAP complete:")
         print(f"    Output shape: {U.shape}")
@@ -232,8 +229,6 @@ class USpacePrepUMAP:
             'n_neighbors': self.n_neighbors,
             'min_dist': self.min_dist,
             'metric': self.metric,
-            'scaler_mean': self.scaler.mean_.tolist(),
-            'scaler_std': self.scaler.scale_.tolist(),
             'n_samples': U.shape[0],
         }
         
@@ -243,10 +238,6 @@ class USpacePrepUMAP:
         # Save fitted UMAP model for transform() on new data
         with open(output_dir / 'umap_model.pkl', 'wb') as f:
             pickle.dump(self.umap, f)
-        
-        # Save fitted scaler
-        with open(output_dir / 'scaler.pkl', 'wb') as f:
-            pickle.dump(self.scaler, f)
         
         print(f"{'='*60}")
         print(f"✓ Saved U-space data (UMAP)")
