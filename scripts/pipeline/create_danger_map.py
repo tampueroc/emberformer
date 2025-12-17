@@ -441,12 +441,14 @@ class DangerMapper:
             normalized = min(dist / max_distance, 1.0)
             return 0.5 + 0.5 * normalized  # Range: 0.5 to 1.0
     
-    def create_danger_map(self, chunk_size=1000):
+    def create_danger_map(self, chunk_size=1000, wind_speed=None, wind_direction=None):
         """
         Create danger map over full landscape
         
         Args:
             chunk_size: Process landscape in chunks (rows at a time)
+            wind_speed: Wind speed value (normalized 0-1) to use for all pixels
+            wind_direction: Wind direction in degrees (0-360) to use for all pixels
         
         Returns:
             danger_grid: [H, W] array with danger scores
@@ -455,7 +457,16 @@ class DangerMapper:
         print(f"Creating Danger Map via U-Space Projection")
         print(f"{'='*60}")
         print(f"Landscape: {self.landscape_shape[0]} × {self.landscape_shape[1]} pixels")
-        print(f"NOTE: Wind features excluded (landscape determinants only)")
+        
+        # Check if wind features are expected
+        self.uses_wind = any(fn in ['wind_speed', 'wind_dir_sin', 'wind_dir_cos'] 
+                            for fn in self.feature_names)
+        if self.uses_wind:
+            if wind_speed is None or wind_direction is None:
+                raise ValueError("Wind features required but --wind_speed or --wind_direction not provided")
+            print(f"Wind scenario: speed={wind_speed:.2f}, direction={wind_direction:.1f}°")
+        else:
+            print(f"NOTE: Wind features not in model (landscape determinants only)")
         
         H, W = self.landscape_shape
         danger_grid = np.full((H, W), np.nan, dtype=np.float32)
@@ -513,6 +524,23 @@ class DangerMapper:
                     feat_raw = feat_normalized * (fmax - fmin) + fmin
                     feature_arrays.append(feat_raw.reshape(-1, 1))
                     print(f"    {feat_name}: denormalized to raw scale ({fmin:.2f}-{fmax:.2f})")
+                elif feat_name == 'wind_speed':
+                    # Broadcast wind speed to all pixels
+                    wind_arr = np.full((n_valid, 1), wind_speed, dtype=np.float32)
+                    feature_arrays.append(wind_arr)
+                    print(f"    wind_speed: {wind_speed:.3f} (constant for all pixels)")
+                elif feat_name == 'wind_dir_sin':
+                    # Circular encoding: convert degrees to radians, then sin
+                    wind_dir_rad = np.radians(wind_direction)
+                    wind_sin = np.full((n_valid, 1), np.sin(wind_dir_rad), dtype=np.float32)
+                    feature_arrays.append(wind_sin)
+                    print(f"    wind_dir_sin: {np.sin(wind_dir_rad):.3f} (from {wind_direction}°)")
+                elif feat_name == 'wind_dir_cos':
+                    # Circular encoding: convert degrees to radians, then cos
+                    wind_dir_rad = np.radians(wind_direction)
+                    wind_cos = np.full((n_valid, 1), np.cos(wind_dir_rad), dtype=np.float32)
+                    feature_arrays.append(wind_cos)
+                    print(f"    wind_dir_cos: {np.cos(wind_dir_rad):.3f} (from {wind_direction}°)")
             
             X_all = np.hstack(feature_arrays)
             print(f"    One-hot forest: {N_FOREST_CATEGORIES} categories")
@@ -769,6 +797,30 @@ class DangerMapper:
         print(f"{'='*60}\n")
 
 
+def parse_wind_scenarios(scenarios_str):
+    """
+    Parse wind scenarios from CLI string.
+    
+    Format: "speed1,dir1;speed2,dir2;..." 
+    Example: "0.5,180;0.7,270;0.3,90"
+    
+    Returns list of (wind_speed, wind_direction) tuples
+    """
+    if not scenarios_str:
+        return [(None, None)]
+    
+    scenarios = []
+    for scenario in scenarios_str.split(';'):
+        parts = scenario.strip().split(',')
+        if len(parts) != 2:
+            raise ValueError(f"Invalid wind scenario format: {scenario}. Expected 'speed,direction'")
+        speed = float(parts[0])
+        direction = float(parts[1])
+        scenarios.append((speed, direction))
+    
+    return scenarios
+
+
 def main():
     parser = argparse.ArgumentParser(description='Create Danger Map via Hypervolume Projection')
     parser.add_argument('--u_space', type=str, required=True,
@@ -781,32 +833,64 @@ def main():
                        help='Output directory for danger map')
     parser.add_argument('--chunk_size', type=int, default=100,
                        help='Process landscape in chunks (rows)')
+    parser.add_argument('--wind_scenarios', type=str, default=None,
+                       help='Wind scenarios as "speed,dir;speed,dir;..." (e.g., "0.5,180;0.7,270")')
+    parser.add_argument('--wind_speed', type=float, default=None,
+                       help='Single wind speed (normalized 0-1). Use with --wind_direction')
+    parser.add_argument('--wind_direction', type=float, default=None,
+                       help='Single wind direction in degrees (0-360). Use with --wind_speed')
     
     args = parser.parse_args()
     
+    # Parse wind scenarios
+    if args.wind_scenarios:
+        wind_scenarios = parse_wind_scenarios(args.wind_scenarios)
+    elif args.wind_speed is not None and args.wind_direction is not None:
+        wind_scenarios = [(args.wind_speed, args.wind_direction)]
+    else:
+        wind_scenarios = [(None, None)]
+    
     # Append git commit hash to output directory
     commit_hash = get_git_commit_hash()
-    output_dir = Path(args.output) / commit_hash
+    base_output_dir = Path(args.output) / commit_hash
     print(f"Git commit: {commit_hash}")
-    print(f"Output directory: {output_dir}\n")
+    print(f"Base output directory: {base_output_dir}")
+    print(f"Wind scenarios: {len(wind_scenarios)}\n")
     
     # Initialize mapper
     mapper = DangerMapper(args.data_root)
     
-    # Load PCA transformation
+    # Load transformation
     mapper.load_transformation(args.u_space)
     
     # Load CHE envelope
     mapper.load_envelope(args.che)
     
-    # Create danger map
-    danger_grid = mapper.create_danger_map(chunk_size=args.chunk_size)
-    
-    # Save results
-    mapper.save_results(danger_grid, output_dir)
+    # Process each wind scenario
+    for i, (wind_speed, wind_direction) in enumerate(wind_scenarios):
+        if wind_speed is not None:
+            scenario_name = f"wind_s{wind_speed:.2f}_d{int(wind_direction)}"
+            output_dir = base_output_dir / scenario_name
+        else:
+            scenario_name = "no_wind"
+            output_dir = base_output_dir
+        
+        print(f"\n{'#'*60}")
+        print(f"Scenario {i+1}/{len(wind_scenarios)}: {scenario_name}")
+        print(f"{'#'*60}")
+        
+        # Create danger map
+        danger_grid = mapper.create_danger_map(
+            chunk_size=args.chunk_size,
+            wind_speed=wind_speed,
+            wind_direction=wind_direction
+        )
+        
+        # Save results
+        mapper.save_results(danger_grid, output_dir)
     
     print(f"\n{'='*60}")
-    print(f"✓ Danger Map Creation Complete")
+    print(f"✓ Danger Map Creation Complete ({len(wind_scenarios)} scenarios)")
     print(f"{'='*60}\n")
 
 
