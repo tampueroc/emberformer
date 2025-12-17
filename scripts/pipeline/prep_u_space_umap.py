@@ -108,7 +108,7 @@ class USpacePrepUMAP:
         
         return combined
     
-    def engineer_features(self, data):
+    def engineer_features(self, data, include_wind=False):
         """Apply feature engineering transformations"""
         print(f"\n{'='*60}")
         print(f"Feature Engineering")
@@ -130,8 +130,21 @@ class USpacePrepUMAP:
             if feat in data:
                 print(f"  ⊗ {feat}: excluded (nodata-dominated, constant in landscape)")
         
-        if 'wind_speed' in data and 'wind_direction' in data:
-            print(f"  ⊗ wind: excluded (temporal, not landscape-based)")
+        # Wind features - optional, circular encoding for direction
+        if include_wind and 'wind_speed' in data and 'wind_direction' in data:
+            wind_speed = np.array(data['wind_speed'], dtype=np.float32)
+            wind_dir = np.array(data['wind_direction'], dtype=np.float32)
+            
+            # Circular encoding for wind direction (already normalized 0-1, treat as fraction of 2π)
+            wind_dir_rad = wind_dir * 2 * np.pi
+            features['wind_speed'] = wind_speed
+            features['wind_dir_sin'] = np.sin(wind_dir_rad).astype(np.float32)
+            features['wind_dir_cos'] = np.cos(wind_dir_rad).astype(np.float32)
+            feature_list.extend(['wind_speed', 'wind_dir_sin', 'wind_dir_cos'])
+            print(f"  ✓ wind_speed: {wind_speed.shape[0]:,} values")
+            print(f"  ✓ wind_dir_sin/cos: circular encoding")
+        elif 'wind_speed' in data:
+            print(f"  ⊗ wind: excluded (use --include_wind to enable)")
         
         print(f"\nTotal features: {len(feature_list)}")
         print(f"{'='*60}\n")
@@ -263,6 +276,8 @@ def main():
                        help='Minimum distance for UMAP (default: 0.1)')
     parser.add_argument('--max_samples', type=int, default=None,
                        help='Max samples for UMAP (subsample if exceeded)')
+    parser.add_argument('--include_wind', action='store_true',
+                       help='Include wind speed and direction (circular encoding)')
     
     args = parser.parse_args()
     
@@ -279,7 +294,7 @@ def main():
     )
     
     data = prep.load_extreme_fires(args.input, args.extreme_threshold)
-    X, metadata = prep.engineer_features(data)
+    X, metadata = prep.engineer_features(data, include_wind=args.include_wind)
     U = prep.fit_transform(X)
     prep.save(U, metadata, output_dir)
 
