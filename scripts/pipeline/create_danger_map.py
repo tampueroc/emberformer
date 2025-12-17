@@ -118,6 +118,12 @@ class DangerMapper:
                 self.scaler = pickle.load(f)
             print(f"  Features: {self.feature_names}")
             print(f"  UMAP components: {self.n_components}")
+        elif self.transform_method == 'direct':
+            # Load fitted scaler only (no dimensionality reduction)
+            with open(u_space_dir / 'scaler.pkl', 'rb') as f:
+                self.scaler = pickle.load(f)
+            print(f"  Features: {self.feature_names}")
+            print(f"  Dimensions: {self.n_components} (no reduction)")
         else:
             # PCA: load components for matrix multiplication
             self.scaler_mean = np.array(self.transform_meta['scaler_mean'])
@@ -195,6 +201,10 @@ class DangerMapper:
             X_scaled = self.scaler.transform(X.reshape(1, -1) if X.ndim == 1 else X)
             U = self.umap_model.transform(X_scaled)
             return U.flatten() if X.ndim == 1 else U
+        elif self.transform_method == 'direct':
+            # Direct: just z-score normalize using fitted scaler
+            X_scaled = self.scaler.transform(X.reshape(1, -1) if X.ndim == 1 else X)
+            return X_scaled.flatten() if X.ndim == 1 else X_scaled
         else:
             # PCA: simple z-score + matrix multiplication
             X_scaled = (X - self.scaler_mean) / (self.scaler_std + 1e-8)
