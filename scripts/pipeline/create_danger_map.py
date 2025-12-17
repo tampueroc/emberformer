@@ -524,8 +524,8 @@ class DangerMapper:
         
         danger_masked = np.ma.masked_invalid(danger_grid)
         
-        # Full scale [0, 1] - occupancy-based
-        vmin = 0.0
+        # Fixed scale: 0.5 (inside/dangerous) to 1.0 (outside/safe)
+        vmin = 0.5
         vmax = 1.0
         
         im = ax.imshow(
@@ -546,7 +546,7 @@ class DangerMapper:
                     fontsize=15, fontweight='bold', pad=20)
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label('Danger Score\n(0=Extreme, 1=Safe)', fontsize=11, fontweight='bold')
+        cbar.set_label('Danger Score\n(0.5=Inside CHE, 1=Outside)', fontsize=11, fontweight='bold')
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map.png', dpi=300, bbox_inches='tight')
@@ -571,7 +571,7 @@ class DangerMapper:
                     fontsize=15, fontweight='bold', pad=20)
         
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04, shrink=0.8)
-        cbar.set_label('Danger Score\n(0=Extreme, 1=Safe)', fontsize=11, fontweight='bold')
+        cbar.set_label('Danger Score\n(0.5=Inside CHE, 1=Outside)', fontsize=11, fontweight='bold')
         
         plt.tight_layout()
         plt.savefig(output_dir / 'danger_map_only.png', dpi=300, bbox_inches='tight')
