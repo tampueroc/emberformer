@@ -132,32 +132,30 @@ class DangerMapper:
             print(f"  Total variance: {self.transform_meta['total_variance']*100:.2f}%")
     
     def load_envelope(self, che_dir):
-        """Load CHE envelope from stage 3"""
+        """Load convex hull envelope from stage 3"""
         che_dir = Path(che_dir)
         
-        print(f"\nLoading CHE envelope from {che_dir}...")
+        print(f"\nLoading convex hull envelope from {che_dir}...")
         
         # Load envelope data
         envelope_data = np.load(che_dir / 'envelope.npz')
-        self.occupancy_grid = envelope_data['occupancy_grid']
-        self.envelope_mask = envelope_data['envelope_mask']
+        hull_points = envelope_data['hull_points']
+        hull_vertices = envelope_data['hull_vertices']
         self.envelope_bounds = envelope_data['bounds']
+        self.n_dims = int(envelope_data['n_dims'])
         
-        # Load hull vertices for distance computation if available
-        if 'hull_vertices' in envelope_data:
-            self.hull_vertices = envelope_data['hull_vertices']
-            print(f"  Loaded {len(self.hull_vertices):,} hull vertices for distance computation")
-        else:
-            self.hull_vertices = None
+        # Reconstruct Delaunay for point-in-hull queries
+        from scipy.spatial import Delaunay
+        self.delaunay = Delaunay(hull_points[hull_vertices])
         
         # Load summary
         with open(che_dir / 'summary.json', 'r') as f:
             che_summary = json.load(f)
         
         print(f"  Method: {che_summary['method']}")
-        if 'area' in che_summary:
-            print(f"  Envelope area: {che_summary['area']:.2e}")
-        print(f"  Grid resolution: {self.occupancy_grid.shape}")
+        print(f"  Vertices: {che_summary['n_vertices']:,}")
+        print(f"  Volume: {che_summary['volume']:.2e}")
+        print(f"  Dimensions: {self.n_dims}")
     
     def engineer_pixel_features(self, pixel_features):
         """
@@ -209,91 +207,26 @@ class DangerMapper:
             U = X_scaled @ self.pca_components.T
             return U
     
-    def compute_distance_to_envelope(self, U):
+    def is_inside_envelope(self, U):
         """
-        Compute distance from U-space point to CHE envelope boundary
+        Check if point is inside convex hull envelope
         
         Returns:
-            distance: 0 = high occupancy (dangerous), 1 = low occupancy (safe)
+            bool: True if inside (dangerous), False if outside (safe)
         """
-        n_dims = self.envelope_bounds[0].shape[0]
-        U_check = U[:n_dims]
-        
-        # Get occupancy at this point (how many bootstrap hulls contain it)
-        occupancy = self._get_occupancy(U_check, n_dims)
-        
-        # Return inverse of occupancy: high occupancy = low distance (dangerous)
-        # occupancy 1.0 -> distance 0.0 (most dangerous)
-        # occupancy 0.0 -> distance 1.0 (safest)
-        return 1.0 - occupancy
+        U_check = U[:self.n_dims].reshape(1, -1)
+        return self.delaunay.find_simplex(U_check)[0] >= 0
     
-    def _get_occupancy(self, U_check, n_dims):
-        """Get occupancy value at U-space point"""
-        # Check if outside bounds
-        for i in range(n_dims):
-            if U_check[i] < self.envelope_bounds[0][i] or U_check[i] > self.envelope_bounds[1][i]:
-                return 0.0  # Outside bounds = 0 occupancy
-        
-        # Map to grid indices
-        if n_dims == 2:
-            u1_min, u2_min = self.envelope_bounds[0]
-            u1_max, u2_max = self.envelope_bounds[1]
-            i = int((U_check[0] - u1_min) / (u1_max - u1_min) * (self.occupancy_grid.shape[1] - 1))
-            j = int((U_check[1] - u2_min) / (u2_max - u2_min) * (self.occupancy_grid.shape[0] - 1))
-            i = np.clip(i, 0, self.occupancy_grid.shape[1] - 1)
-            j = np.clip(j, 0, self.occupancy_grid.shape[0] - 1)
-            return float(self.occupancy_grid[j, i])
-        elif n_dims == 3:
-            # 3D grid indexing
-            indices = []
-            for dim in range(3):
-                idx = int((U_check[dim] - self.envelope_bounds[0][dim]) / 
-                         (self.envelope_bounds[1][dim] - self.envelope_bounds[0][dim]) * 
-                         (self.occupancy_grid.shape[dim] - 1))
-                idx = np.clip(idx, 0, self.occupancy_grid.shape[dim] - 1)
-                indices.append(idx)
-            return float(self.occupancy_grid[indices[0], indices[1], indices[2]])
+    def compute_danger_score(self, U):
+        """
+        Binary danger classification per methodology:
+        - Inside envelope: 0.5 (dangerous)
+        - Outside envelope: 1.0 (safe)
+        """
+        if self.is_inside_envelope(U):
+            return 0.5  # Dangerous
         else:
-            raise ValueError(f"Only 2D and 3D supported, got {n_dims}D")
-    
-    def _check_inside_grid(self, U_check, n_dims, return_occupancy=False):
-        """Helper to check if point is inside envelope using grid"""
-        # Check if outside bounds
-        for i in range(n_dims):
-            if U_check[i] < self.envelope_bounds[0][i] or U_check[i] > self.envelope_bounds[1][i]:
-                return (False, float('inf')) if return_occupancy else False
-        
-        # Map to grid indices
-        if n_dims == 2:
-            u1_min, u2_min = self.envelope_bounds[0]
-            u1_max, u2_max = self.envelope_bounds[1]
-            i = int((U_check[0] - u1_min) / (u1_max - u1_min) * (self.occupancy_grid.shape[1] - 1))
-            j = int((U_check[1] - u2_min) / (u2_max - u2_min) * (self.occupancy_grid.shape[0] - 1))
-            i = np.clip(i, 0, self.occupancy_grid.shape[1] - 1)
-            j = np.clip(j, 0, self.occupancy_grid.shape[0] - 1)
-            
-            inside = bool(self.envelope_mask[j, i])
-            occupancy = float(self.occupancy_grid[j, i])
-            
-        elif n_dims == 3:
-            # 3D grid
-            indices = []
-            for dim in range(3):
-                idx = int((U_check[dim] - self.envelope_bounds[0][dim]) / 
-                         (self.envelope_bounds[1][dim] - self.envelope_bounds[0][dim]) * 
-                         (self.occupancy_grid.shape[dim] - 1))
-                idx = np.clip(idx, 0, self.occupancy_grid.shape[dim] - 1)
-                indices.append(idx)
-            
-            inside = bool(self.envelope_mask[indices[1], indices[0], indices[2]])
-            occupancy = float(self.occupancy_grid[indices[1], indices[0], indices[2]])
-        else:
-            raise ValueError(f"Only 2D and 3D envelopes supported, got {n_dims}D")
-        
-        if return_occupancy:
-            return inside, 1.0 - occupancy
-        else:
-            return inside
+            return 1.0  # Safe
     
     def create_danger_map(self, chunk_size=1000):
         """
@@ -331,7 +264,6 @@ class DangerMapper:
         
         # Store raw features for pixels inside danger zone
         danger_pixel_data = []
-        distances_list = []
         
         # Process only valid pixels (where elevation is valid)
         print(f"  Processing {self.valid_mask.sum():,} valid pixels...")
@@ -358,19 +290,13 @@ class DangerMapper:
             # Project to U-space
             U = self.project_to_uspace(X)
             
-            # Compute distance to envelope (0 = high occupancy/dangerous, 1 = low/safe)
-            distance = self.compute_distance_to_envelope(U)
-            distances_list.append(distance)
-            
-            # Danger score = distance (already 0-1 scale)
-            # 0 = inside high-occupancy region (most dangerous)
-            # 1 = outside envelope (safest)
-            danger_score = distance
+            # Binary classification: 0.5 = dangerous (inside), 1.0 = safe (outside)
+            danger_score = self.compute_danger_score(U)
             
             danger_grid[y, x] = danger_score
             
-            # Save high-danger pixels (low distance = high occupancy)
-            if distance < 0.3:
+            # Save dangerous pixels (inside envelope)
+            if danger_score == 0.5:
                 danger_record = {
                     'y': int(y),
                     'x': int(x),
@@ -382,31 +308,19 @@ class DangerMapper:
                     'flora': float(pixel_features['flora']),
                     'paleo': float(pixel_features['paleo']),
                     'urbana': float(pixel_features['urbana']),
-                    'distance_to_envelope': float(distance),
                     'danger_score': float(danger_score),
                 }
                 danger_pixel_data.append(danger_record)
         
         # Statistics
-        distances_arr = np.array(distances_list)
-        print(f"\n  Distance statistics:")
-        print(f"    Min: {distances_arr.min():.4f}")
-        print(f"    Max: {distances_arr.max():.4f}")
-        print(f"    Mean: {distances_arr.mean():.4f}")
-        print(f"    Median: {np.median(distances_arr):.4f}")
-        print(f"    Inside envelope (dist=0): {(distances_arr == 0.0).sum():,} ({(distances_arr == 0.0).sum()/len(distances_arr)*100:.1f}%)")
-        
-        print(f"\n✓ Danger map created")
-        print(f"  NaN pixels in danger_grid: {np.isnan(danger_grid).sum():,} / {danger_grid.size:,}")
-        print(f"  Valid pixels match mask: {(~np.isnan(danger_grid) == self.valid_mask).all()}")
-        
         valid_danger = danger_grid[~np.isnan(danger_grid)]
+        n_dangerous = (valid_danger == 0.5).sum()
+        n_safe = (valid_danger == 1.0).sum()
+        
+        print(f"\n✓ Danger map created (binary classification)")
         print(f"  Valid pixels: {len(valid_danger):,}")
-        print(f"  Danger score range: [{valid_danger.min():.3f}, {valid_danger.max():.3f}] (0=extreme, 1=safe)")
-        print(f"  Mean danger score: {valid_danger.mean():.3f}")
-        print(f"  Extreme danger (score < 0.2): {(valid_danger < 0.2).sum():,} ({(valid_danger < 0.2).sum()/len(valid_danger)*100:.1f}%)")
-        print(f"  High danger (score < 0.4): {(valid_danger < 0.4).sum():,} ({(valid_danger < 0.4).sum()/len(valid_danger)*100:.1f}%)")
-        print(f"  Moderate danger (score < 0.6): {(valid_danger < 0.6).sum():,} ({(valid_danger < 0.6).sum()/len(valid_danger)*100:.1f}%)")
+        print(f"  Dangerous (inside envelope): {n_dangerous:,} ({100*n_dangerous/len(valid_danger):.1f}%)")
+        print(f"  Safe (outside envelope): {n_safe:,} ({100*n_safe/len(valid_danger):.1f}%)")
         print(f"  Danger zone pixels saved: {len(danger_pixel_data):,}")
         print(f"{'='*60}\n")
         
