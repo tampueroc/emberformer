@@ -55,6 +55,14 @@ N_FOREST_CATEGORIES = len(FOREST_CODES)  # 39
 # Build code to index mapping once
 FOREST_CODE_TO_IDX = {code: idx for idx, code in enumerate(FOREST_CODES)}
 
+# Raw feature ranges for denormalization (must match prep_u_space_umap.py)
+FEATURE_RANGES = {
+    'forest': (0.0, 189.0),
+    'cbd': (0.0, 0.4467),
+    'cbh': (0.0, 13.8692),
+    'elevation': (345.9422, 3012.5251),
+}
+
 
 def get_git_commit_hash():
     """Get short git commit hash for output directory naming"""
@@ -327,13 +335,18 @@ class DangerMapper:
             # Build feature matrix in correct order
             feature_arrays = [forest_onehot]
             
-            # Add continuous features in order
+            # Add continuous features in order - DENORMALIZED to raw scale
             for feat_name in self.feature_names:
                 if feat_name.startswith('forest_'):
                     continue  # Already handled
                 if feat_name in band_idx:
-                    feat_vals = self.landscape[band_idx[feat_name], y_coords, x_coords]
-                    feature_arrays.append(feat_vals.reshape(-1, 1))
+                    # Get normalized values from landscape
+                    feat_normalized = self.landscape[band_idx[feat_name], y_coords, x_coords]
+                    # Denormalize to raw scale
+                    fmin, fmax = FEATURE_RANGES[feat_name]
+                    feat_raw = feat_normalized * (fmax - fmin) + fmin
+                    feature_arrays.append(feat_raw.reshape(-1, 1))
+                    print(f"    {feat_name}: denormalized to raw scale ({fmin:.2f}-{fmax:.2f})")
             
             X_all = np.hstack(feature_arrays)
             print(f"    One-hot forest: {N_FOREST_CATEGORIES} categories")

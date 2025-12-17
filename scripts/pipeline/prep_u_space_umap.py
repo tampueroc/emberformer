@@ -25,7 +25,7 @@ import subprocess
 import pickle
 from tqdm import tqdm
 
-# Forest fuel type codes from spain_lookup_table.csv (39 categories)
+# Forest fuel type codes from spain_lookup_table.csv (38 categories)
 # These are the raw integer codes before normalization
 FOREST_CODES = np.array([
     0, 91, 92, 93, 98, 99,  # Non-fuel (6)
@@ -35,7 +35,17 @@ FOREST_CODES = np.array([
     161, 162, 163, 164, 165,  # TU1-TU5 (5)
     181, 182, 183, 185, 186, 188, 189,  # TL1-TL9 (7, some missing)
 ], dtype=np.int32)
-N_FOREST_CATEGORIES = len(FOREST_CODES)  # 39
+N_FOREST_CATEGORIES = len(FOREST_CODES)  # 38
+
+# Raw feature ranges for denormalization (from landscape GeoTIFF)
+# Normalization was: (value - min) / (max - min)
+# Denormalization is: value * (max - min) + min
+FEATURE_RANGES = {
+    'forest': (0.0, 189.0),
+    'cbd': (0.0, 0.4467),
+    'cbh': (0.0, 13.8692),
+    'elevation': (345.9422, 3012.5251),
+}
 
 # Try GPU UMAP first, fall back to CPU
 try:
@@ -60,12 +70,20 @@ def get_git_commit_hash():
         return 'unknown'
 
 
-def normalized_to_forest_code(normalized_values, forest_min=0, forest_max=189):
+def denormalize(normalized_values, feat_name):
     """
-    Convert normalized [0,1] forest values back to integer fuel type codes.
+    Convert normalized [0,1] values back to raw scale.
     
     The normalization was: (value - min) / (max - min)
     So inverse is: value * (max - min) + min
+    """
+    fmin, fmax = FEATURE_RANGES[feat_name]
+    return normalized_values * (fmax - fmin) + fmin
+
+
+def normalized_to_forest_code(normalized_values, forest_min=0, forest_max=189):
+    """
+    Convert normalized [0,1] forest values back to integer fuel type codes.
     """
     raw = normalized_values * (forest_max - forest_min) + forest_min
     return np.round(raw).astype(np.int32)
@@ -103,7 +121,7 @@ class USpacePrepUMAP:
     """Prepare U-space from salience data using UMAP"""
 
     def __init__(self, max_components=3, n_neighbors=15, min_dist=0.1,
-                 metric='jaccard', random_state=42, min_feature_std=0.01,
+                 metric='euclidean', random_state=42, min_feature_std=0.01,
                  batch_size=10000):
         self.max_components = max_components
         self.n_neighbors = n_neighbors
@@ -183,16 +201,18 @@ class USpacePrepUMAP:
             top_5 = sorted(zip(unique_codes, counts), key=lambda x: -x[1])[:5]
             print(f"    Top 5: {[(c, n) for c, n in top_5]}")
 
-        # Continuous features (cbd, cbh, elevation)
+        # Continuous features (cbd, cbh, elevation) - DENORMALIZED to raw scale
         continuous_features = ['cbd', 'cbh', 'elevation']
         excluded_features = ['arqueo', 'flora', 'paleo', 'urbana']
 
         for feat in continuous_features:
             if feat in data:
-                feat_arr = np.array(data[feat], dtype=np.float32).reshape(-1, 1)
-                feature_arrays.append(feat_arr)
+                feat_normalized = np.array(data[feat], dtype=np.float32)
+                feat_raw = denormalize(feat_normalized, feat)
+                feature_arrays.append(feat_raw.reshape(-1, 1))
                 feature_list.append(feat)
-                print(f"  ✓ {feat}: {feat_arr.shape[0]:,} values")
+                fmin, fmax = FEATURE_RANGES[feat]
+                print(f"  ✓ {feat}: {feat_raw.shape[0]:,} values (raw: {fmin:.2f}-{fmax:.2f})")
 
         for feat in excluded_features:
             if feat in data:
@@ -355,8 +375,8 @@ def main():
                        help='Number of neighbors for UMAP (default: 15)')
     parser.add_argument('--min_dist', type=float, default=0.1,
                        help='Minimum distance for UMAP (default: 0.1)')
-    parser.add_argument('--metric', type=str, default='jaccard',
-                       help='Distance metric for UMAP (default: jaccard, good for one-hot)')
+    parser.add_argument('--metric', type=str, default='euclidean',
+                       help='Distance metric for UMAP (default: euclidean)')
     parser.add_argument('--batch_size', type=int, default=10000,
                        help='Batch size for UMAP transform (default: 10000)')
     parser.add_argument('--include_wind', action='store_true',
