@@ -217,16 +217,40 @@ class DangerMapper:
         U_check = U[:self.n_dims].reshape(1, -1)
         return self.delaunay.find_simplex(U_check)[0] >= 0
     
-    def compute_danger_score(self, U):
+    def distance_to_hull(self, U):
         """
-        Binary danger classification per methodology:
+        Compute distance from point to convex hull boundary.
+        Returns 0 if inside, positive distance if outside.
+        """
+        from scipy.spatial import distance
+        
+        U_check = U[:self.n_dims]
+        
+        # Get hull vertices
+        hull_points = self.delaunay.points
+        
+        # Compute distance to nearest hull vertex (approximation)
+        # For exact distance to hull surface, would need to check all facets
+        distances = distance.cdist([U_check], hull_points, 'euclidean')[0]
+        return distances.min()
+    
+    def compute_danger_score(self, U, max_distance=5.0):
+        """
+        Danger classification based on proximity to hypervolume:
         - Inside envelope: 0.5 (dangerous)
-        - Outside envelope: 1.0 (safe)
+        - Outside envelope: 0.5 to 1.0 based on distance (closer = more dangerous)
+        
+        Args:
+            max_distance: Distance at which score reaches 1.0 (safe)
         """
         if self.is_inside_envelope(U):
-            return 0.5  # Dangerous
+            return 0.5  # Dangerous - inside the extreme fire hypervolume
         else:
-            return 1.0  # Safe
+            # Outside: scale by distance to hull
+            dist = self.distance_to_hull(U)
+            # Normalize: 0 distance -> 0.5, max_distance -> 1.0
+            normalized = min(dist / max_distance, 1.0)
+            return 0.5 + 0.5 * normalized  # Range: 0.5 to 1.0
     
     def create_danger_map(self, chunk_size=1000):
         """
@@ -314,13 +338,15 @@ class DangerMapper:
         
         # Statistics
         valid_danger = danger_grid[~np.isnan(danger_grid)]
-        n_dangerous = (valid_danger == 0.5).sum()
-        n_safe = (valid_danger == 1.0).sum()
+        n_inside = (valid_danger == 0.5).sum()
+        n_outside = (valid_danger > 0.5).sum()
         
-        print(f"\n✓ Danger map created (binary classification)")
+        print(f"\n✓ Danger map created (proximity-based classification)")
         print(f"  Valid pixels: {len(valid_danger):,}")
-        print(f"  Dangerous (inside envelope): {n_dangerous:,} ({100*n_dangerous/len(valid_danger):.1f}%)")
-        print(f"  Safe (outside envelope): {n_safe:,} ({100*n_safe/len(valid_danger):.1f}%)")
+        print(f"  Inside envelope (score=0.5): {n_inside:,} ({100*n_inside/len(valid_danger):.1f}%)")
+        print(f"  Outside envelope (score>0.5): {n_outside:,} ({100*n_outside/len(valid_danger):.1f}%)")
+        print(f"  Score range: [{valid_danger.min():.3f}, {valid_danger.max():.3f}]")
+        print(f"  Mean score: {valid_danger.mean():.3f}")
         print(f"  Danger zone pixels saved: {len(danger_pixel_data):,}")
         print(f"{'='*60}\n")
         
