@@ -306,45 +306,79 @@ class DangerMapper:
         vertices_concat = che_data['vertices_concat']
         offsets = che_data['offsets']
         self.n_dims = int(che_data['n_dims'])
-        n_bootstraps = int(che_data['n_bootstraps'])
+        self.n_bootstraps = int(che_data['n_bootstraps'])
         
-        # For now, use first hull for membership test (TODO: occupancy-based)
-        # Extract first hull's vertices
-        first_hull_verts = vertices_concat[offsets[0]:offsets[1]]
-        
-        # Reconstruct Delaunay for point-in-hull queries
+        # Build Delaunay triangulation for ALL bootstrap hulls
         from scipy.spatial import Delaunay, ConvexHull, cKDTree
-        self.delaunay = Delaunay(first_hull_verts)
         
-        # Store all hull vertices for potential occupancy computation
-        self.all_hull_vertices = []
-        for i in range(n_bootstraps):
-            self.all_hull_vertices.append(vertices_concat[offsets[i]:offsets[i+1]])
+        print(f"  Building Delaunay for {self.n_bootstraps} bootstrap hulls...")
+        self.all_delaunay = []
+        for i in range(self.n_bootstraps):
+            hull_verts = vertices_concat[offsets[i]:offsets[i+1]]
+            try:
+                delaunay = Delaunay(hull_verts)
+                self.all_delaunay.append(delaunay)
+            except Exception as e:
+                print(f"    Warning: Hull {i} Delaunay failed: {e}")
+                self.all_delaunay.append(None)
         
-        # For 3D: build acceleration structure for surface distance
+        n_valid = sum(1 for d in self.all_delaunay if d is not None)
+        print(f"  Built {n_valid}/{self.n_bootstraps} Delaunay triangulations")
+        
+        # Keep first hull's Delaunay for backward compatibility / distance calc
+        self.delaunay = self.all_delaunay[0]
+        
+        # For 3D: build acceleration structure for surface distance (using first hull)
         self.tri_tree = None
         self.tri_verts = None
-        if self.n_dims == 3:
-            # Build hull from first bootstrap's vertices
+        if self.n_dims == 3 and self.delaunay is not None:
+            first_hull_verts = vertices_concat[offsets[0]:offsets[1]]
             self.hull3 = ConvexHull(first_hull_verts, qhull_options='QJ')
-            simplices = self.hull3.simplices  # [T, 3] triangle vertex indices
-            self.tri_verts = first_hull_verts[simplices]  # [T, 3, 3] triangle vertex coords
-            
-            # Build KDTree on triangle centroids for fast nearest-triangle lookup
-            centroids = self.tri_verts.mean(axis=1)  # [T, 3]
+            simplices = self.hull3.simplices
+            self.tri_verts = first_hull_verts[simplices]
+            centroids = self.tri_verts.mean(axis=1)
             self.tri_tree = cKDTree(centroids)
-            
             print(f"  3D surface distance: {len(simplices)} triangles, KDTree built")
         
         # Load summary
         with open(che_dir / 'summary.json', 'r') as f:
             che_summary = json.load(f)
         
+        self.occupancy_threshold = che_summary.get('occupancy_threshold', 0.5)
+        
         print(f"  Method: {che_summary['method']}")
-        print(f"  Bootstraps: {n_bootstraps}")
+        print(f"  Bootstraps: {self.n_bootstraps}")
         print(f"  Mean vertices: {che_summary['vertices_mean']:.1f}")
         print(f"  Mean volume: {che_summary['volume_mean']:.2e}")
         print(f"  Dimensions: {self.n_dims}")
+        print(f"  Occupancy threshold: {self.occupancy_threshold}")
+    
+    def compute_occupancy(self, U_points):
+        """
+        Compute occupancy for each point: fraction of hulls containing the point.
+        
+        Args:
+            U_points: [N, n_dims] array of U-space coordinates
+        
+        Returns:
+            occupancy: [N] array with values in [0, 1]
+        """
+        N = U_points.shape[0]
+        U_check = U_points[:, :self.n_dims]
+        
+        # Count how many hulls contain each point
+        inside_counts = np.zeros(N, dtype=np.int32)
+        
+        for delaunay in self.all_delaunay:
+            if delaunay is None:
+                continue
+            inside = delaunay.find_simplex(U_check) >= 0
+            inside_counts += inside.astype(np.int32)
+        
+        n_valid_hulls = sum(1 for d in self.all_delaunay if d is not None)
+        occupancy = inside_counts / n_valid_hulls
+        
+        return occupancy
     
     def engineer_pixel_features(self, pixel_features):
         """
@@ -565,14 +599,25 @@ class DangerMapper:
         else:
             U_all = self.project_to_uspace(X_all)
         
-        # Check inside/outside hull in batch
-        print(f"  Computing danger scores (batch)...")
-        inside_mask = self.delaunay.find_simplex(U_all[:, :self.n_dims]) >= 0
+        # Compute CHE occupancy (fraction of hulls containing each point)
+        print(f"  Computing CHE occupancy across {self.n_bootstraps} hulls...")
+        occupancy = self.compute_occupancy(U_all)
         
-        # For inside: score = 0.5
-        # For outside: compute distance-based score
-        danger_scores = np.ones(n_valid, dtype=np.float32)
-        danger_scores[inside_mask] = 0.5
+        # Danger score based on occupancy:
+        # - occupancy >= threshold: "inside" CHE, danger_score = 1 - occupancy (higher occupancy = more danger)
+        # - occupancy < threshold: "outside" CHE, use distance-based score
+        inside_mask = occupancy >= self.occupancy_threshold
+        
+        # Danger score: 0 = max danger (high occupancy), 1 = safe (outside all hulls)
+        # For inside: score = 0.5 * (1 - occupancy/1.0) → 0.0 at occupancy=1.0, 0.25 at occupancy=0.5
+        # Actually let's keep it simpler: 
+        # - Inside (occupancy >= threshold): score = 0.5 - 0.5 * occupancy (0 at occ=1, 0.25 at occ=0.5)
+        # - Outside (occupancy < threshold): score = 0.5 + distance-based
+        danger_scores = np.zeros(n_valid, dtype=np.float32)
+        
+        # For inside points: lower occupancy = less dangerous, higher = more dangerous
+        # Score range: 0.0 (occ=1.0, max danger) to 0.5 (occ=0.0, boundary)
+        danger_scores[inside_mask] = 0.5 * (1.0 - occupancy[inside_mask])
         
         # Distance computation for outside points
         outside_indices = np.where(~inside_mask)[0]
@@ -585,13 +630,8 @@ class DangerMapper:
                 # 3D: use exact distance to hull surface (triangle mesh)
                 print(f"  Computing 3D surface distances for {len(outside_indices):,} outside points...")
                 
-                # Query K nearest triangles for each outside point
                 _, tri_indices = self.tri_tree.query(U_outside, k=K_NEAREST_TRIS)
-                
-                # Get candidate triangles for each point: [M, K, 3, 3]
                 candidate_tris = self.tri_verts[tri_indices]
-                
-                # Compute exact distance to nearest triangle surface
                 distances = point_triangle_distance_batch(U_outside, candidate_tris)
                 
                 normalized = np.clip(distances / max_distance, 0.0, 1.0)
@@ -609,7 +649,7 @@ class DangerMapper:
         # Fill danger grid
         danger_grid[y_coords, x_coords] = danger_scores
         
-        # Collect dangerous pixel data
+        # Collect dangerous pixel data (inside CHE)
         danger_pixel_data = []
         danger_indices = np.where(inside_mask)[0]
         for idx in danger_indices:
@@ -621,21 +661,25 @@ class DangerMapper:
                 'cbd': float(self.landscape[band_idx['cbd'], y, x]),
                 'cbh': float(self.landscape[band_idx['cbh'], y, x]),
                 'elevation': float(self.landscape[band_idx['elevation'], y, x]),
-                'danger_score': 0.5,
+                'occupancy': float(occupancy[idx]),
+                'danger_score': float(danger_scores[idx]),
             }
             danger_pixel_data.append(danger_record)
         
         # Statistics
         valid_danger = danger_grid[~np.isnan(danger_grid)]
-        n_inside = (valid_danger == 0.5).sum()
-        n_outside = (valid_danger > 0.5).sum()
+        valid_occupancy = occupancy
+        n_inside = inside_mask.sum()
+        n_outside = (~inside_mask).sum()
         
-        print(f"\n✓ Danger map created (proximity-based classification)")
+        print(f"\n✓ Danger map created (CHE occupancy-based classification)")
+        print(f"  Occupancy threshold: {self.occupancy_threshold}")
         print(f"  Valid pixels: {len(valid_danger):,}")
-        print(f"  Inside envelope (score=0.5): {n_inside:,} ({100*n_inside/len(valid_danger):.1f}%)")
-        print(f"  Outside envelope (score>0.5): {n_outside:,} ({100*n_outside/len(valid_danger):.1f}%)")
-        print(f"  Score range: [{valid_danger.min():.3f}, {valid_danger.max():.3f}]")
-        print(f"  Mean score: {valid_danger.mean():.3f}")
+        print(f"  Inside CHE (occ >= {self.occupancy_threshold}): {n_inside:,} ({100*n_inside/len(valid_danger):.1f}%)")
+        print(f"  Outside CHE (occ < {self.occupancy_threshold}): {n_outside:,} ({100*n_outside/len(valid_danger):.1f}%)")
+        print(f"  Occupancy: mean={valid_occupancy.mean():.3f}, median={np.median(valid_occupancy):.3f}")
+        print(f"  Occupancy range: [{valid_occupancy.min():.3f}, {valid_occupancy.max():.3f}]")
+        print(f"  Danger score range: [{valid_danger.min():.3f}, {valid_danger.max():.3f}]")
         print(f"  Danger zone pixels saved: {len(danger_pixel_data):,}")
         print(f"{'='*60}\n")
         
@@ -839,6 +883,8 @@ def main():
                        help='Single wind speed (normalized 0-1). Use with --wind_direction')
     parser.add_argument('--wind_direction', type=float, default=None,
                        help='Single wind direction in degrees (0-360). Use with --wind_speed')
+    parser.add_argument('--occupancy_threshold', type=float, default=None,
+                       help='Occupancy threshold for CHE (default: from summary.json, typically 0.5)')
     
     args = parser.parse_args()
     
@@ -865,6 +911,11 @@ def main():
     
     # Load CHE envelope
     mapper.load_envelope(args.che)
+    
+    # Override occupancy threshold if specified
+    if args.occupancy_threshold is not None:
+        mapper.occupancy_threshold = args.occupancy_threshold
+        print(f"Overriding occupancy threshold: {args.occupancy_threshold}")
     
     # Process each wind scenario
     for i, (wind_speed, wind_direction) in enumerate(wind_scenarios):
