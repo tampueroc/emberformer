@@ -1,0 +1,114 @@
+# EmberFormer-DINO with Expanding Window (T=5)
+# More memory-efficient than T=6, still good temporal context
+
+global:
+  seed: 42
+  cudnn_benchmark: true
+
+data:
+  data_dir: "~/data/deep_crown_dataset/organized_spreads"
+  batch_size: 8   # Reduced further for memory safety with T=5
+  num_workers: 8
+  pin_memory: true
+  drop_last: false
+  shuffle: true
+  sequence_length: 5  # Maximum window size (creates windows 2,3,4,5)
+  use_pixel_data: true
+  resize_to: 406
+
+encoding:
+  fire_channel: 1
+  fire_value: 231
+  isochrone_channel: 1
+  isochrone_value: 231
+
+wandb:
+  enabled: true
+  mode: online
+  project: "emberformer"
+  entity: "tampueroc-university-of-chile"
+  run_name:
+  run_name_template: "{script}-dino-expanding-t5-{time}"
+  tags: ["dino", "expanding-window", "t=5", "focal-tversky"]
+  auto_tags: true
+  log_batch_preview: false
+  max_preview_images: 2
+  preview_size: 400
+  watch: false
+  log_artifacts: true
+
+model:
+  dino:
+    model_name: "facebook/dinov2-base"
+    freeze_fire: true
+    freeze_static: true
+
+  temporal:
+    d_model: 256
+    nhead: 8
+    num_layers: 4
+    dim_feedforward: 1024
+    dropout: 0.1
+    max_seq_len: 32
+
+  fusion:
+    d_wind: 32
+    type: "concat"
+
+  spatial:
+    decoder_type: "simple"
+    hidden_channels: 128
+    base_channels: 48
+
+  refinement:
+    patch_size: 14
+    base_channels: 32
+
+  metrics:
+    pred_thresh: 0.5
+    target_thresh: 0.05
+    pos_weight: "auto"
+
+  loss:
+    type: "focal_tversky"
+    focal_weight: 0.7
+    tversky_weight: 0.3
+    focal_alpha: 0.25
+    focal_gamma: 2.0
+    tversky_alpha: 0.3
+    tversky_beta: 0.7
+
+train:
+  model: "emberformer_dino_expanding_t5"
+
+  epochs: 30
+  lr: 1e-4
+  weight_decay: 1e-4
+  grad_clip_norm: 1.0
+
+  finetune:
+    enabled: true
+    epochs: 20
+    lr: 1e-5
+
+  log_images_every: 1
+  log_metrics_every: 50
+
+  save_checkpoints: true
+  checkpoint_dir: "~/data/emberformer/checkpoints"
+
+  early_stopping:
+    enabled: true
+    patience: 5
+    min_delta: 0.002
+    mode: "max"
+    monitor: "val/f1"
+
+split:
+  train: 0.8
+  val: 0.1
+  test: 0.1
+  seed: 42
+
+static:
+  num_channels: 7

@@ -1,5 +1,5 @@
 from .baselines import CopyLast, ConvHead2D, Tiny3D, UNetS
-from .emberformer import EmberFormer
+from .emberformer import EmberFormer, EmberFormerDINO
 
-__all__ = ["CopyLast", "ConvHead2D", "Tiny3D", "UNetS", "EmberFormer"]
+__all__ = ["CopyLast", "ConvHead2D", "Tiny3D", "UNetS", "EmberFormer", "EmberFormerDINO"]
 

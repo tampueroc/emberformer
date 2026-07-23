@@ -5,12 +5,19 @@ Architecture:
     1. Temporal Token Embedder: Embeds fire, wind, positional, and static features
     2. Temporal Transformer: Per-patch temporal attention over history
     3. Spatial Decoder: Pre-trained or custom decoder for segmentation
+    
+DINO Architecture:
+    1. DINO Spatial Encoder: Extracts spatial features from fire frames
+    2. Feature Fusion: Combines fire, static, wind features
+    3. Temporal Transformer: Per-patch temporal attention
+    4. Simple Spatial Decoder: Lightweight decoder for binary segmentation
 """
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Literal
 import math
+import numpy as np
 
 
 class PositionalEncoding(nn.Module):
@@ -260,44 +267,71 @@ class RefinementDecoder(nn.Module):
     
     Args:
         d_model: input feature dimension from temporal transformer
-        patch_size: upsampling factor (e.g., 8 or 16)
+        patch_size: upsampling factor (e.g., 8 or 16) - defaults to 14
         base_channels: base channel count for decoder layers
     """
-    def __init__(self, d_model: int, patch_size: int = 8, base_channels: int = 32):
+    def __init__(self, d_model: int, patch_size: int = 14, base_channels: int = 32):
         super().__init__()
         self.patch_size = patch_size
         
-        # Calculate number of upsampling stages (log2 of patch_size)
+        # Calculate number of upsampling stages
+        # For non-power-of-2 sizes like 14, we use a combination of upsampling operations
         import math
-        num_stages = int(math.log2(patch_size))
-        assert 2 ** num_stages == patch_size, f"patch_size must be power of 2, got {patch_size}"
+        if patch_size == 14:
+            # 14 = 2 × 7, use custom upsampling strategy
+            num_stages = 2  # Two stages: 2× and 7×
+        else:
+            num_stages = int(math.log2(patch_size))
+            assert 2 ** num_stages == patch_size, f"patch_size must be power of 2 or 14, got {patch_size}"
         
         # Input combines coarse prediction (1 ch) + features (d_model ch)
         self.input_proj = nn.Conv2d(d_model + 1, base_channels * 4, kernel_size=1)
         
         # Progressive upsampling with residual blocks
-        layers = []
-        in_ch = base_channels * 4
-        out_ch = base_channels * 4
-        
-        for i in range(num_stages):
-            # Transposed conv for 2× upsampling
-            layers.append(nn.ConvTranspose2d(
-                in_ch, out_ch, 
-                kernel_size=4, stride=2, padding=1, bias=False
-            ))
-            layers.append(nn.BatchNorm2d(out_ch))
-            layers.append(nn.ReLU(inplace=True))
+        if patch_size == 14:
+            # Custom upsampling for 14×: first 2×, then 7×
+            self.upsample_layers = nn.Sequential(
+                # Stage 1: 2× upsampling
+                nn.ConvTranspose2d(base_channels * 4, base_channels * 4, kernel_size=4, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(base_channels * 4),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(base_channels * 4, base_channels * 4, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(base_channels * 4),
+                nn.ReLU(inplace=True),
+                
+                # Stage 2: 7× upsampling using interpolation + conv
+                nn.Upsample(scale_factor=7, mode='bilinear', align_corners=False),
+                nn.Conv2d(base_channels * 4, base_channels * 2, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(base_channels * 2),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(base_channels * 2, base_channels * 2, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(base_channels * 2),
+                nn.ReLU(inplace=True),
+            )
+            in_ch = base_channels * 2
+        else:
+            layers = []
+            in_ch = base_channels * 4
+            out_ch = base_channels * 4
             
-            # Refinement conv to reduce artifacts
-            layers.append(nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False))
-            layers.append(nn.BatchNorm2d(out_ch))
-            layers.append(nn.ReLU(inplace=True))
+            for i in range(num_stages):
+                # Transposed conv for 2× upsampling
+                layers.append(nn.ConvTranspose2d(
+                    in_ch, out_ch, 
+                    kernel_size=4, stride=2, padding=1, bias=False
+                ))
+                layers.append(nn.BatchNorm2d(out_ch))
+                layers.append(nn.ReLU(inplace=True))
+                
+                # Refinement conv to reduce artifacts
+                layers.append(nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False))
+                layers.append(nn.BatchNorm2d(out_ch))
+                layers.append(nn.ReLU(inplace=True))
+                
+                in_ch = out_ch
+                out_ch = max(base_channels, out_ch // 2)  # Reduce channels each stage
             
-            in_ch = out_ch
-            out_ch = max(base_channels, out_ch // 2)  # Reduce channels each stage
-        
-        self.upsample_layers = nn.Sequential(*layers)
+            self.upsample_layers = nn.Sequential(*layers)
         
         # Final 1×1 conv to prediction
         self.output_conv = nn.Conv2d(in_ch, 1, kernel_size=1)
@@ -583,3 +617,354 @@ class EmberFormer(nn.Module):
         logits_pixels = self.refinement_decoder(features_grid, coarse_logits)
         
         return logits_pixels
+
+
+# ============================================================================
+# DINO-based Architecture Components
+# ============================================================================
+
+class DinoSpatialEncoder(nn.Module):
+    """
+    DINOv2 encoder for extracting spatial features from fire frames
+    
+    Uses pretrained DINOv2 to extract rich spatial representations.
+    Handles grayscale input by projecting to 3 channels.
+    
+    Args:
+        model_name: HuggingFace model identifier
+        frozen: whether to freeze DINO weights
+        input_channels: number of input channels (1 for fire, 7 for static)
+    """
+    def __init__(
+        self,
+        model_name: str = "facebook/dinov2-small",
+        frozen: bool = True,
+        input_channels: int = 1,
+    ):
+        super().__init__()
+        
+        try:
+            from transformers import Dinov2Model
+        except ImportError:
+            raise ImportError(
+                "transformers package required for DINO. "
+                "Install with: pip install transformers"
+            )
+        
+        # Load pretrained DINO with eager attention (needed for attention analysis)
+        self.dino = Dinov2Model.from_pretrained(
+            model_name,
+            attn_implementation='eager'
+        )
+        self.d_dino = self.dino.config.hidden_size  # 384 (small), 768 (base)
+        self.patch_size = self.dino.config.patch_size  # 14
+        
+        # Adapt input channels (DINO expects 3-channel RGB)
+        if input_channels != 3:
+            self.input_projection = nn.Conv2d(
+                input_channels, 3, 
+                kernel_size=1, 
+                bias=False
+            )
+            # Initialize to replicate channels
+            with torch.no_grad():
+                self.input_projection.weight.fill_(1.0 / input_channels)
+        else:
+            self.input_projection = nn.Identity()
+        
+        # Freeze DINO if requested
+        if frozen:
+            for param in self.dino.parameters():
+                param.requires_grad = False
+        
+        self.frozen = frozen
+    
+    def unfreeze(self):
+        """Unfreeze DINO for fine-tuning"""
+        for param in self.dino.parameters():
+            param.requires_grad = True
+        self.frozen = False
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: [B, C, H, W] input images
+        Returns:
+            features: [B, N, d_dino] patch features (excludes CLS token)
+        """
+        # Project to 3 channels
+        x = self.input_projection(x)  # [B, 3, H, W]
+        
+        # DINO forward
+        outputs = self.dino(x)
+        
+        # Get patch tokens (exclude CLS token at position 0)
+        features = outputs.last_hidden_state[:, 1:, :]  # [B, N, d_dino]
+        
+        return features
+
+
+class FeatureFusion(nn.Module):
+    """
+    Fuse DINO fire features, static features, and wind
+    via concatenation and projection
+    
+    Args:
+        d_dino: DINO feature dimension
+        d_wind: wind embedding dimension
+        d_model: output dimension for transformer
+    """
+    def __init__(
+        self,
+        d_dino: int = 384,
+        d_wind: int = 32,
+        d_model: int = 256,
+    ):
+        super().__init__()
+        
+        # Wind embedding
+        self.wind_embed = nn.Sequential(
+            nn.Linear(2, d_wind),
+            nn.LayerNorm(d_wind),
+            nn.GELU(),
+        )
+        
+        # Fusion projection
+        self.fusion_proj = nn.Sequential(
+            nn.Linear(d_dino + d_dino + d_wind, d_model),
+            nn.LayerNorm(d_model),
+            nn.GELU(),
+        )
+    
+    def forward(
+        self,
+        fire_features: torch.Tensor,    # [B, T, N, d_dino]
+        static_features: torch.Tensor,  # [B, N, d_dino]
+        wind: torch.Tensor,             # [B, T, 2]
+    ) -> torch.Tensor:
+        """
+        Returns:
+            fused: [B, N, T, d_model] - ready for temporal transformer
+        """
+        B, T, N, _ = fire_features.shape
+        
+        # Embed wind
+        wind_emb = self.wind_embed(wind)  # [B, T, d_wind]
+        
+        # Broadcast static and wind to match fire shape
+        static_expanded = static_features.unsqueeze(1).expand(B, T, N, -1)
+        wind_expanded = wind_emb.unsqueeze(2).expand(B, T, N, -1)
+        
+        # Concatenate
+        combined = torch.cat([
+            fire_features,
+            static_expanded,
+            wind_expanded
+        ], dim=-1)  # [B, T, N, d_dino + d_dino + d_wind]
+        
+        # Project to d_model
+        fused = self.fusion_proj(combined)  # [B, T, N, d_model]
+        
+        # Rearrange for transformer: [B, N, T, d_model]
+        fused = fused.transpose(1, 2)
+        
+        return fused
+
+
+class SimpleSpatialDecoder(nn.Module):
+    """
+    Lightweight decoder for patch-grid to binary segmentation
+    
+    Much simpler than SegFormer - appropriate for binary fire prediction task
+    with strong features from temporal transformer.
+    
+    Args:
+        d_model: input feature dimension from transformer
+        hidden_channels: hidden layer channels
+    """
+    def __init__(
+        self,
+        d_model: int = 256,
+        hidden_channels: int = 128,
+    ):
+        super().__init__()
+        
+        # Simple upsampling path
+        self.decoder = nn.Sequential(
+            # Stage 1
+            nn.Conv2d(d_model, hidden_channels, 3, padding=1),
+            nn.BatchNorm2d(hidden_channels),
+            nn.ReLU(inplace=True),
+            
+            # Stage 2
+            nn.Conv2d(hidden_channels, hidden_channels // 2, 3, padding=1),
+            nn.BatchNorm2d(hidden_channels // 2),
+            nn.ReLU(inplace=True),
+            
+            # Output head
+            nn.Conv2d(hidden_channels // 2, 1, 1),
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: [B, d_model, Gy, Gx]
+        Returns:
+            logits: [B, 1, Gy, Gx]
+        """
+        return self.decoder(x)
+
+
+class EmberFormerDINO(nn.Module):
+    """
+    EmberFormer with DINO spatial encoding
+    
+    Architecture:
+        Fire frames [B, T, 1, H, W] → DINO → [B, T, N, d_dino]
+        Static [B, Cs, H, W] → DINO → [B, N, d_dino]
+        Wind [B, T, 2]
+        → Fusion → [B, N, T, d_model]
+        → Temporal Transformer → [B, N, d_model]
+        → Reshape → [B, d_model, Gy, Gx]
+        → Spatial Decoder → [B, 1, Gy, Gx]
+        → Refinement → [B, 1, H, W]
+    
+    Args:
+        dino_model: HuggingFace DINO model name
+        freeze_dino: whether to freeze DINO encoders
+        d_model: transformer embedding dimension
+        nhead: number of attention heads
+        num_layers: number of transformer layers
+        dim_feedforward: feedforward dimension
+        dropout: dropout rate
+        spatial_hidden: hidden channels for spatial decoder
+        patch_size: patch size for refinement
+        fusion_type: feature fusion strategy
+    """
+    def __init__(
+        self,
+        # DINO config
+        dino_model: str = "facebook/dinov2-small",
+        freeze_dino: bool = True,
+        
+        # Transformer config
+        d_model: int = 256,
+        nhead: int = 4,
+        num_layers: int = 4,
+        dim_feedforward: int = 1024,
+        dropout: float = 0.1,
+        
+        # Decoder config
+        spatial_hidden: int = 128,
+        patch_size: int = 16,
+        
+        # Static channels
+        static_channels: int = 7,
+    ):
+        super().__init__()
+        
+        # DINO encoders
+        self.fire_encoder = DinoSpatialEncoder(
+            model_name=dino_model,
+            frozen=freeze_dino,
+            input_channels=1,  # Grayscale fire
+        )
+        
+        self.static_encoder = DinoSpatialEncoder(
+            model_name=dino_model,
+            frozen=True,  # Always freeze static encoder
+            input_channels=static_channels,
+        )
+        
+        d_dino = self.fire_encoder.d_dino
+        
+        # Feature fusion
+        self.fusion = FeatureFusion(
+            d_dino=d_dino,
+            d_wind=32,
+            d_model=d_model,
+        )
+        
+        # Temporal transformer
+        self.temporal_transformer = TemporalTransformerEncoder(
+            d_model=d_model,
+            nhead=nhead,
+            num_layers=num_layers,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+        )
+        
+        # Spatial decoder
+        self.spatial_decoder = SimpleSpatialDecoder(
+            d_model=d_model,
+            hidden_channels=spatial_hidden,
+        )
+        
+        # Refinement decoder
+        self.refinement_decoder = RefinementDecoder(
+            d_model=d_model,
+            patch_size=patch_size,
+            base_channels=32,
+        )
+        
+        self.patch_size = patch_size
+        self.d_model = d_model
+    
+    def unfreeze_dino(self):
+        """Unfreeze DINO fire encoder for fine-tuning"""
+        self.fire_encoder.unfreeze()
+    
+    def forward(
+        self,
+        fire_hist: torch.Tensor,   # [B, T, 1, H, W]
+        static: torch.Tensor,      # [B, Cs, H, W]
+        wind: torch.Tensor,        # [B, T, 2]
+        valid_t: torch.Tensor,     # [B, T] temporal validity mask
+    ) -> torch.Tensor:
+        """
+        Returns:
+            predictions: [B, 1, H, W]
+        """
+        B, T, _, H, W = fire_hist.shape
+        
+        # Encode fire frames with DINO
+        # Reshape to process all timesteps together
+        fire_frames = fire_hist.reshape(B * T, 1, H, W)
+        fire_features = self.fire_encoder(fire_frames)  # [B*T, N, d_dino]
+        
+        # Reshape back
+        N = fire_features.shape[1]
+        fire_features = fire_features.reshape(B, T, N, -1)
+        
+        # Encode static terrain (single pass)
+        static_features = self.static_encoder(static)  # [B, N, d_dino]
+        
+        # Fuse features
+        fused = self.fusion(
+            fire_features=fire_features,
+            static_features=static_features,
+            wind=wind,
+        )  # [B, N, T, d_model]
+        
+        # Temporal transformer
+        temporal_features = self.temporal_transformer(
+            fused, 
+            valid_t=valid_t
+        )  # [B, N, d_model]
+        
+        # Reshape to grid
+        Gy = Gx = int(np.sqrt(N))
+        assert Gy * Gx == N, f"N={N} must be square"
+        
+        grid_features = temporal_features.transpose(1, 2).reshape(B, self.d_model, Gy, Gx)
+        
+        # Spatial decoder
+        patch_logits = self.spatial_decoder(grid_features)  # [B, 1, Gy, Gx]
+        
+        # Refinement to pixels
+        pixel_logits = self.refinement_decoder(
+            grid_features,
+            patch_logits
+        )  # [B, 1, H, W]
+        
+        return pixel_logits

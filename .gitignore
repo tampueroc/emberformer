@@ -1,17 +1,8 @@
-# Project Specific
-data_cache/
-wandb/
-
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Environments
-.env
-.venv
-
-# Distribution / packaging
+*.so
 .Python
 build/
 develop-eggs/
@@ -29,21 +20,59 @@ wheels/
 .installed.cfg
 *.egg
 
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-
-# IDE specific files
-.idea/
+# IDEs
 .vscode/
+.idea/
 *.swp
 *.swo
+*~
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data
+data/raw/
+data/processed/
+*.hdf5
+*.h5
+*.pkl
+*.pickle
+
+# Models
+models/*.pt
+models/*.pth
+*.ckpt
+checkpoints/
+
+# Logs
+logs/
+*.log
+wandb/
+
+# Results (keep structure, ignore content)
+results/*/
+!results/.gitkeep
+
+# Analysis outputs (timestamped runs)
+analysis/phase_*/outputs/
+analysis/phase_*/spatial/*.png
+analysis/phase_*/temporal/*.png
+analysis/phase_*/temporal/*.pkl
+analysis/phase_*/extreme_events/*.png
+analysis/phase_*/features/*.png
+analysis/phase_*/wind/*.png
+
+# Keep example outputs
+!analysis/**/example_*.png
+
+# OS
+.DS_Store
+Thumbs.db
